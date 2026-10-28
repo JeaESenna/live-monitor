@@ -1,0 +1,14 @@
+# 运行配置与日志：含个人直播间列表 / 观看记录，禁止提交
+/dist/config.json
+/dist/logs/
+/dist/selftest_result.txt
+/dist/*.rsp
+*.log
+
+# 本地打包产物（dist/ 中的 exe 已单独提交）
+/release/
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store

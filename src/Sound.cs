@@ -1,0 +1,120 @@
+using System;
+using System.IO;
+using System.Media;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
+namespace LiveMonitor
+{
+    public static class Sound
+    {
+        static byte[] _wav;
+        static readonly object _lock = new object();
+        static int _playing;
+
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+        static extern int mciSendString(string command, StringBuilder buffer, int bufferSize, IntPtr hwndCallback);
+
+        public static byte[] Wav
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    if (_wav == null)
+                    {
+                        try
+                        {
+                            using (var s = Assembly.GetExecutingAssembly()
+                                .GetManifestResourceStream("chime.wav"))
+                            {
+                                if (s == null) return null;
+                                using (var ms = new MemoryStream())
+                                {
+                                    s.CopyTo(ms);
+                                    _wav = ms.ToArray();
+                                }
+                            }
+                        }
+                        catch { _wav = null; }
+                    }
+                    return _wav;
+                }
+            }
+        }
+
+        /// <summary>Plays the custom sound file when set, otherwise the built-in chime.
+        /// Overlapping plays are skipped.</summary>
+        public static void PlayChime(bool enabled, string soundFile)
+        {
+            if (!enabled) return;
+            string file = soundFile;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                if (Interlocked.Exchange(ref _playing, 1) == 1) return; // already playing
+                try
+                {
+                    if (!string.IsNullOrEmpty(file) && File.Exists(file))
+                    {
+                        if (!PlayFile(file)) PlayBuiltIn();
+                    }
+                    else
+                    {
+                        PlayBuiltIn();
+                    }
+                }
+                catch { }
+                finally { Interlocked.Exchange(ref _playing, 0); }
+            });
+        }
+
+        static void PlayBuiltIn()
+        {
+            try
+            {
+                byte[] wav = Wav;
+                if (wav == null) return;
+                using (var ms = new MemoryStream(wav))
+                using (var player = new SoundPlayer(ms))
+                {
+                    player.PlaySync();
+                }
+            }
+            catch { }
+        }
+
+        static bool PlayFile(string path)
+        {
+            try
+            {
+                string ext = Path.GetExtension(path).ToLowerInvariant();
+                if (ext == ".wav")
+                {
+                    using (var player = new SoundPlayer(path))
+                    {
+                        player.PlaySync();
+                    }
+                    return true;
+                }
+
+                // mp3 and other formats via MCI; "wait" blocks until playback ends
+                string openCmd = "open \"" + path + "\" alias lm_sound";
+                if (ext == ".mp3") openCmd += " type mpegvideo";
+                mciSendString("close lm_sound", null, 0, IntPtr.Zero); // free a stale alias, ignore errors
+                if (mciSendString(openCmd, null, 0, IntPtr.Zero) != 0) return false;
+                try
+                {
+                    if (mciSendString("play lm_sound wait", null, 0, IntPtr.Zero) != 0) return false;
+                }
+                finally
+                {
+                    mciSendString("close lm_sound", null, 0, IntPtr.Zero);
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+    }
+}
