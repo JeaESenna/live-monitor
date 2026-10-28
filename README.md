@@ -88,3 +88,7 @@ live-monitor/
 ├── res/                 # 生成的图标与提示音
 └── test/                # 自测代码
 ```
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源。
