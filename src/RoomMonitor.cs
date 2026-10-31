@@ -38,7 +38,12 @@ namespace LiveMonitor
         volatile bool _running;
         volatile bool _paused;
         readonly Dictionary<string, RoomState> _states = new Dictionary<string, RoomState>();
-        DateTime? _lastCheckEnd;
+        readonly HashSet<string> _inFlight = new HashSet<string>();   // rooms currently being checked
+        long _lastCheckEndTicks;   // 0 == never; written atomically (UI thread reads it)
+
+        /// <summary>Optional check used to ignore results for rooms the user has
+        /// already removed (a manual check may finish after the delete).</summary>
+        public Func<RoomItem, bool> RoomExists;
 
         /// <summary>Raised on the worker thread.</summary>
         public event Action<MonitorEvent> Event;
@@ -54,7 +59,15 @@ namespace LiveMonitor
             set { _paused = value; if (!value) _wake.Set(); }
         }
 
-        public DateTime? LastCheckEnd { get { return _lastCheckEnd; } }
+        public DateTime? LastCheckEnd
+        {
+            get
+            {
+                long ticks = Interlocked.Read(ref _lastCheckEndTicks);
+                if (ticks == 0) return null;
+                return new DateTime(ticks);
+            }
+        }
 
         public int LiveCount
         {
@@ -96,7 +109,7 @@ namespace LiveMonitor
                     _thread.Name = "LiveMonitorWorker";
                     _thread.Start();
                 }
-                catch (Exception ex2) { Log.Exception(ex2); }
+                catch (Exception ex2) { Log.Exception(ex2); _thread = null; }
             }
         }
 
@@ -105,18 +118,38 @@ namespace LiveMonitor
             _running = false;
             _wake.Set();
             try { if (_thread != null) _thread.Join(2000); } catch { }
+            _thread = null;
         }
 
         public void Wake() { _wake.Set(); }
 
+        /// <summary>
+        /// The worker must never die silently: a monitoring program that stops
+        /// polling after an unexpected exception looks "fine" but never notifies
+        /// again.  Every iteration is therefore guarded and the loop keeps going.
+        /// </summary>
         void Loop()
         {
-            _wake.WaitOne(1500);
+            try { _wake.WaitOne(1500); } catch { }
             while (_running)
             {
-                if (!_paused) CheckAll();
-                _wake.WaitOne(TimeSpan.FromSeconds(_cfg.IntervalSec));
+                try
+                {
+                    if (!_paused) CheckAll();
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception(ex);
+                    try { Thread.Sleep(1000); } catch { }
+                }
+
+                int interval = 30;
+                try { interval = _cfg.IntervalSec; } catch { }
+                if (interval < 5) interval = 5;
+                try { _wake.WaitOne(TimeSpan.FromSeconds(interval)); }
+                catch { try { Thread.Sleep(1000); } catch { } }
             }
+            Log.Info("worker stopped");
         }
 
         public void CheckAll()
@@ -125,40 +158,76 @@ namespace LiveMonitor
             lock (_cfg) { rooms = new List<RoomItem>(_cfg.Rooms); }
 
             var started = CheckStarted;
-            if (started != null) started();
+            if (started != null)
+            {
+                try { started(); } catch (Exception ex) { Log.Exception(ex); }
+            }
             try
             {
                 foreach (var room in rooms)
                 {
                     if (!_running) break;
                     CheckOne(room);
-                    Thread.Sleep(120);
+                    try { Thread.Sleep(120); } catch { }
                 }
             }
             finally
             {
-                _lastCheckEnd = DateTime.Now;
+                Interlocked.Exchange(ref _lastCheckEndTicks, DateTime.Now.Ticks);
                 var finished = CheckFinished;
-                if (finished != null) finished();
+                if (finished != null)
+                {
+                    try { finished(); } catch (Exception ex) { Log.Exception(ex); }
+                }
             }
         }
 
         public void CheckRoomAsync(RoomItem room)
         {
-            ThreadPool.QueueUserWorkItem(delegate { CheckOne(room); });
+            if (room == null) return;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { CheckOne(room); }
+                catch (Exception ex) { Log.Exception(ex); }
+            });
         }
 
         void CheckOne(RoomItem room)
         {
-            CheckResult res;
-            try { res = PlatformApi.Check(room.Platform, room.Id, room.Url); }
-            catch (Exception ex) { res = new CheckResult(LiveState.Error) { Error = ex.Message }; }
-            Log.Info(string.Format("check {0}:{1} => {2} title={3} err={4} src={5} start={6}",
-                room.Platform, room.Id, res.State,
-                res.Title == null ? "" : res.Title, res.Error == null ? "" : res.Error,
-                res.Src == null ? "" : res.Src,
-                res.LiveStartAt == null ? "" : ((DateTime)res.LiveStartAt).ToString("yyyy-MM-dd HH:mm:ss")));
-            Raise(room, res);
+            if (room == null) return;
+            string key = room.Key;
+
+            // never run two checks of the same room at once (manual "立即检测"
+            // while the periodic worker is checking it, double-click, etc.)
+            lock (_inFlight)
+            {
+                if (_inFlight.Contains(key)) return;
+                _inFlight.Add(key);
+            }
+            try
+            {
+                CheckResult res;
+                try { res = PlatformApi.Check(room.Platform, room.Id, room.Url); }
+                catch (Exception ex) { res = new CheckResult(LiveState.Error) { Error = ex.Message }; }
+                if (res != null)
+                    res.LiveStartAt = PlatformApi.SanitizeLiveStartAt(res.LiveStartAt, DateTime.Now);
+                try
+                {
+                    Log.Info(string.Format("check {0}:{1} => {2} title={3} err={4} src={5} area={6} start={7}",
+                        room.Platform, room.Id, res.State,
+                        res.Title == null ? "" : res.Title, res.Error == null ? "" : res.Error,
+                        res.Src == null ? "" : res.Src,
+                        res.Area == null ? "" : res.Area,
+                        res.LiveStartAt == null ? "" : ((DateTime)res.LiveStartAt).ToString("yyyy-MM-dd HH:mm:ss")));
+                }
+                catch { }
+                Raise(room, res);
+            }
+            catch (Exception ex) { Log.Exception(ex); }
+            finally
+            {
+                lock (_inFlight) { _inFlight.Remove(key); }
+            }
         }
 
         /// <summary>
@@ -171,6 +240,16 @@ namespace LiveMonitor
         /// </summary>
         public void Raise(RoomItem room, CheckResult res)
         {
+            if (room == null || res == null) return;
+
+            var exists = RoomExists;
+            if (exists != null)
+            {
+                bool ok;
+                try { ok = exists(room); } catch { ok = true; }
+                if (!ok) return;   // room was deleted while its check was running
+            }
+
             bool becameLive = false;
             string transLog = "";
 
@@ -269,6 +348,7 @@ namespace LiveMonitor
 
         public void RemoveState(RoomItem room)
         {
+            if (room == null) return;
             lock (_states) { _states.Remove(room.Key); }
         }
     }

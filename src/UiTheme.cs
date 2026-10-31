@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
@@ -23,30 +25,54 @@ namespace LiveMonitor
         public static readonly Color RowHover = Color.FromArgb(238, 245, 255);
         public static readonly Color GridLine = Color.FromArgb(238, 242, 247);
 
-        /// <summary>App icon as a displayable bitmap (PNG resource; Icon.ToBitmap fails on PNG icons in .NET 4.x).</summary>
+        // Fonts and the preview bitmap are shared/cached: creating GDI objects on
+        // every paint (CellFormatting fires per cell) or per popup would leak GDI
+        // handles over a long session.  The cache is small and bounded (a handful
+        // of size/style combinations), so the fonts live for the whole process.
+        static readonly Dictionary<string, Font> _fontCache = new Dictionary<string, Font>();
+        static readonly object _fontLock = new object();
+        static Image _appImage;
+        static readonly object _imageLock = new object();
+
+        /// <summary>App icon as a displayable bitmap (PNG resource; Icon.ToBitmap fails on PNG icons in .NET 4.x).
+        /// The bitmap is created once and shared by every window.</summary>
         public static Image AppImage
         {
             get
             {
-                try
+                lock (_imageLock)
                 {
-                    using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("app.png"))
+                    if (_appImage != null) return _appImage;
+                    try
                     {
-                        if (s != null)
+                        using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("app.png"))
                         {
-                            using (var tmp = Image.FromStream(s))
-                                return new Bitmap(tmp);
+                            if (s != null)
+                            {
+                                using (var tmp = Image.FromStream(s))
+                                    _appImage = new Bitmap(tmp);
+                            }
                         }
                     }
+                    catch { _appImage = null; }
+                    return _appImage;
                 }
-                catch { }
-                return null;
             }
         }
 
+        /// <summary>Returns a cached font for the given size/style (never disposed; the
+        /// process owns these handles until exit).</summary>
         public static Font F(float size, FontStyle style)
         {
-            return new Font("Microsoft YaHei UI", size, style, GraphicsUnit.Point);
+            string key = size.ToString("R", CultureInfo.InvariantCulture) + "|" + ((int)style).ToString(CultureInfo.InvariantCulture);
+            lock (_fontLock)
+            {
+                Font f;
+                if (_fontCache.TryGetValue(key, out f) && f != null) return f;
+                f = new Font("Microsoft YaHei UI", size, style, GraphicsUnit.Point);
+                _fontCache[key] = f;
+                return f;
+            }
         }
 
         public static void EnableDoubleBuffer(Control c)

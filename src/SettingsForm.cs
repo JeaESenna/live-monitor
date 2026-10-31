@@ -262,34 +262,63 @@ namespace LiveMonitor
 
         void SaveClick(object sender, EventArgs e)
         {
-            _cfg.IntervalSec = (int)_interval.Value;
-            _cfg.SoundOn = _chkSound.Checked;
-            _cfg.LoopSoundSec = (int)_loopSec.Value;
-            _cfg.PopupAutoCloseSec = (int)_autoClose.Value;
-            _cfg.NotifyAlreadyLive = _chkNotifyLive.Checked;
-            _cfg.CloseToTray = _rbTray.Checked;
-            _cfg.SoundFile = _soundPath == null ? "" : _soundPath;
-            _cfg.AutoOpenRoom = _chkAutoOpen.Checked;
-            _cfg.Save();
+            try
+            {
+                _cfg.IntervalSec = Clamp((int)_interval.Value, 15, 3600, 30);
+                _cfg.SoundOn = _chkSound.Checked;
+                _cfg.LoopSoundSec = Clamp((int)_loopSec.Value, 0, 3600, 60);
+                _cfg.PopupAutoCloseSec = Clamp((int)_autoClose.Value, 0, 3600, 0);
+                _cfg.NotifyAlreadyLive = _chkNotifyLive.Checked;
+                _cfg.CloseToTray = _rbTray.Checked;
+                _cfg.SoundFile = _soundPath == null ? "" : _soundPath;
+                _cfg.AutoOpenRoom = _chkAutoOpen.Checked;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception(ex);
+                MessageBox.Show(this, "保存设置失败: " + ex.Message, "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!_cfg.Save())
+            {
+                MessageBox.Show(this, "设置写入配置文件失败,重启后可能丢失。\r\n请检查程序目录是否可写或磁盘是否已满。",
+                    "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
             Saved = true;
             DialogResult = DialogResult.OK;
             Close();
         }
 
+        static int Clamp(int v, int min, int max, int fallback)
+        {
+            if (v < min || v > max) return fallback;
+            return v;
+        }
+
         /// <summary>
         /// Removes ALL auto-start entries left by earlier versions: the Run key,
-        /// the scheduled task, and the launcher files. Called once at startup so
-        /// old entries can never disturb the system again.
+        /// the scheduled task, and the launcher files. Runs once (the result is
+        /// remembered in the config) so old entries can never disturb the system
+        /// again without spawning schtasks.exe on every startup.
         /// </summary>
         public static void CleanupAutostart()
         {
+            bool removedAny = false;
+
             try
             {
                 using (var key = Registry.CurrentUser.OpenSubKey(
                     @"Software\Microsoft\Windows\CurrentVersion\Run", true))
                 {
-                    if (key != null) key.DeleteValue("LiveMonitor", false);
+                    if (key != null && key.GetValue("LiveMonitor") != null)
+                    {
+                        key.DeleteValue("LiveMonitor", false);
+                        removedAny = true;
+                    }
                 }
             }
             catch { }
@@ -300,7 +329,7 @@ namespace LiveMonitor
                 if (dir != null)
                 {
                     string p = System.IO.Path.Combine(dir, "LiveMonitor_delayed.vbs");
-                    if (System.IO.File.Exists(p)) System.IO.File.Delete(p);
+                    if (System.IO.File.Exists(p)) { System.IO.File.Delete(p); removedAny = true; }
                 }
             }
             catch { }
@@ -311,7 +340,7 @@ namespace LiveMonitor
                 if (!string.IsNullOrEmpty(dir))
                 {
                     string p = System.IO.Path.Combine(dir, "LiveMonitor_autostart.vbs");
-                    if (System.IO.File.Exists(p)) System.IO.File.Delete(p);
+                    if (System.IO.File.Exists(p)) { System.IO.File.Delete(p); removedAny = true; }
                 }
             }
             catch { }
@@ -323,12 +352,16 @@ namespace LiveMonitor
                 psi.UseShellExecute = false;
                 using (var proc = System.Diagnostics.Process.Start(psi))
                 {
-                    if (proc != null) proc.WaitForExit(10000);
+                    if (proc != null)
+                    {
+                        proc.WaitForExit(5000);
+                        try { if (proc.HasExited) proc.Dispose(); } catch { }
+                    }
                 }
             }
             catch { }
 
-            Log.Info("autostart: all auto-start entries removed");
+            Log.Info("autostart cleanup done (removedAny=" + removedAny + ")");
         }
     }
 }

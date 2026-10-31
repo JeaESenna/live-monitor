@@ -3,7 +3,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
+using WinFormsTimer = System.Windows.Forms.Timer;
 
 namespace LiveMonitor
 {
@@ -16,7 +19,14 @@ namespace LiveMonitor
         FlatButton _btnAdd, _btnDelete, _btnOpen, _btnCheck, _btnSettings;
         NotifyIcon _tray;
         ToolStripMenuItem _miPause, _miNotify;
-        Timer _uiTimer;
+
+        // grid column indexes (kept as constants: the columns are updated from
+        // several places, hard-coded numbers are too easy to break)
+        const int COL_STATUS = 0, COL_NAME = 1, COL_PLATFORM = 2, COL_AREA = 3, COL_ROOMID = 4,
+                  COL_TITLE = 5, COL_NOTIFY = 6, COL_CHECK = 7, COL_LIVE = 8;
+        WinFormsTimer _uiTimer, _bootTimer, _healthTimer;
+        ContextMenuStrip _trayMenu;
+        string _exitReason = "";
         readonly List<NotifyForm> _popups = new List<NotifyForm>();
         readonly HashSet<string> _knownKeys = new HashSet<string>();
         readonly HashSet<string> _mutedKeys = new HashSet<string>();
@@ -25,11 +35,35 @@ namespace LiveMonitor
         bool _firstMinimizeHint;
         bool _checking;
         Icon _appIcon;
+        bool _startHidden;          // launched with -m/--minimized: start in the tray
+        bool _hiddenStartHandled;
+        bool _inResize;
+        volatile bool _autostartCleanupDone;   // set by the cleanup thread, persisted by the UI thread
+        bool _autostartCleanupSaved;
+
+        // Broadcast message Explorer sends after it (re)starts; receiving it here
+        // means the shell crashed/restarted and our tray icon was re-registered.
+        static readonly uint WM_TASKBARCREATED = RegisterWindowMessage("TaskbarCreated");
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern uint RegisterWindowMessage(string lpString);
+        [DllImport("user32.dll")]
+        static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll")]
+        static extern bool CloseHandle(IntPtr h);
 
         public MainForm(bool minimized)
         {
             _cfg = AppConfig.Load();
             Log.Info("start: rooms=" + _cfg.Rooms.Count + " interval=" + _cfg.IntervalSec);
+            Log.Info(string.Format("env: os={0} clr={1} exe={2} data={3} smallIcon={4}",
+                Environment.OSVersion,
+                Environment.Version,
+                Application.ExecutablePath,
+                AppConfig.DataDir,
+                SystemInformation.SmallIconSize));
 
             Text = "直播监测";
             StartPosition = FormStartPosition.CenterScreen;
@@ -46,6 +80,7 @@ namespace LiveMonitor
             BuildTray();
 
             _monitor = new RoomMonitor(_cfg);
+            _monitor.RoomExists = delegate(RoomItem r) { lock (_cfg) { return _cfg.Rooms.Contains(r); } };
             _monitor.Event += OnMonitorEvent;
             _monitor.CheckStarted += delegate
             {
@@ -58,32 +93,71 @@ namespace LiveMonitor
                 catch { }
             };
 
-            // remove any auto-start entries left by earlier versions
-            SettingsForm.CleanupAutostart();
+            // Remove auto-start entries left by older versions. This is a one-time
+            // job (it spawns schtasks.exe), so run it on a background thread and
+            // remember it in the config instead of on every UI startup.
+            if (!_cfg.LegacyAutostartCleaned)
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        SettingsForm.CleanupAutostart();
+                        // Persisting the marker is done by the UI thread (UpdateStatus)
+                        // so it still happens even if this completes before the form
+                        // handle exists (BeginInvoke would fail in that window).
+                        _autostartCleanupDone = true;
+                    }
+                    catch (Exception ex) { Log.Exception(ex); }
+                });
+            }
 
             // start the worker thread shortly after the UI is up
-            var bootTimer = new Timer();
-            bootTimer.Interval = 3000;
-            bootTimer.Tick += delegate
+            _bootTimer = new WinFormsTimer();
+            _bootTimer.Interval = 3000;
+            _bootTimer.Tick += delegate
             {
-                bootTimer.Stop();
-                bootTimer.Dispose();
+                _bootTimer.Stop();
+                _bootTimer.Dispose();
                 try { _monitor.Start(); }
                 catch (Exception ex) { Log.Exception(ex); }
             };
-            bootTimer.Start();
+            _bootTimer.Start();
 
-            _uiTimer = new Timer();
+            _uiTimer = new WinFormsTimer();
             _uiTimer.Interval = 500;
             _uiTimer.Tick += delegate { UpdateStatus(); };
             _uiTimer.Start();
 
+            // hourly self-diagnostic line: makes a long-run problem visible in
+            // app.log (handle/GDI/memory trend) without any external tool
+            _healthTimer = new WinFormsTimer();
+            _healthTimer.Interval = 60 * 60 * 1000;
+            _healthTimer.Tick += delegate { LogHealth(); };
+            _healthTimer.Start();
+
             LoadRoomsToGrid();
 
-            if (minimized)
+            // NOTE: do NOT set WindowState=Minimized here.  Doing that from the
+            // constructor made OnResize->Hide()->ShowInTaskbar re-enter each other
+            // while the handle was being created, overflowing the stack
+            // (0xC00000FD "无法创建新的堆栈防护页面") whenever the app was started
+            // with -m/--minimized.  SetVisibleCore (below) starts hidden instead.
+            _startHidden = minimized;
+        }
+
+        /// <summary>Classic "start in tray" pattern: create the window handle but do
+        /// not show the window the first time Application.Run asks for it.</summary>
+        protected override void SetVisibleCore(bool value)
+        {
+            if (!_hiddenStartHandled && _startHidden)
             {
-                WindowState = FormWindowState.Minimized;
+                _hiddenStartHandled = true;
+                try { if (!IsHandleCreated) CreateHandle(); } catch { }
+                base.SetVisibleCore(false);
+                return;
             }
+            base.SetVisibleCore(value);
         }
 
         // ---------------- UI construction ----------------
@@ -266,17 +340,18 @@ namespace LiveMonitor
             };
             Ui.EnableDoubleBuffer(g);
 
-            AddCol(g, "状态", 128);
-            AddCol(g, "主播", 150);
-            AddCol(g, "平台", 70);
-            AddCol(g, "房间号", 100);
+            AddCol(g, "状态", 118);
+            AddCol(g, "主播", 140);
+            AddCol(g, "平台", 58);
+            AddCol(g, "分区", 150);
+            AddCol(g, "房间号", 92);
             AddCol(g, "直播标题", 200);
-            AddCol(g, "提醒", 56);
-            AddCol(g, "最后检测", 100);
-            AddCol(g, "上次开播", 120);
+            AddCol(g, "提醒", 50);
+            AddCol(g, "最后检测", 90);
+            AddCol(g, "上次开播", 86);
 
-            g.Columns[4].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-            g.Columns[4].MinimumWidth = 140;
+            g.Columns[COL_TITLE].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+            g.Columns[COL_TITLE].MinimumWidth = 140;
 
             g.CellFormatting += GridCellFormatting;
             g.CellDoubleClick += delegate(object s, DataGridViewCellEventArgs e)
@@ -351,7 +426,7 @@ namespace LiveMonitor
         void GridCellFormatting(object sender, DataGridViewCellFormattingEventArgs e)
         {
             if (e.RowIndex < 0 || e.RowIndex >= _grid.Rows.Count) return;
-            string status = _grid.Rows[e.RowIndex].Cells[0].Value as string;
+            string status = _grid.Rows[e.RowIndex].Cells[COL_STATUS].Value as string;
             bool live = status != null && (status.Contains("直播中") || status.Contains("轮播"));
             bool warn = status != null && status.Contains("异常");
             bool bad = status != null && (status.Contains("失败") || status.Contains("不存在"));
@@ -367,7 +442,7 @@ namespace LiveMonitor
             e.CellStyle.SelectionBackColor = Color.FromArgb(219, 234, 254);
             e.CellStyle.SelectionForeColor = Ui.Text;
 
-            if (e.ColumnIndex == 0)
+            if (e.ColumnIndex == COL_STATUS)
             {
                 Color c = Ui.Accent;
                 if (warn) c = Ui.Orange;
@@ -378,11 +453,18 @@ namespace LiveMonitor
                 e.CellStyle.SelectionForeColor = c;
                 e.CellStyle.Font = Ui.F(9, FontStyle.Bold);
             }
-            else if (e.ColumnIndex == 1)
+            else if (e.ColumnIndex == COL_NAME)
             {
                 e.CellStyle.Font = Ui.F(9, FontStyle.Bold);
             }
-            else if (e.ColumnIndex == 5)
+            else if (e.ColumnIndex == COL_AREA)
+            {
+                // 未开播时分区用灰色；开播（直播中/轮播）时和标题一样用正文黑色
+                Color areaColor = live ? Ui.Text : Ui.Gray;
+                e.CellStyle.ForeColor = areaColor;
+                e.CellStyle.SelectionForeColor = areaColor;
+            }
+            else if (e.ColumnIndex == COL_NOTIFY)
             {
                 string v = e.Value as string;
                 e.CellStyle.ForeColor = v == "开" ? Ui.Green : Ui.Gray;
@@ -408,6 +490,7 @@ namespace LiveMonitor
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出", null, delegate { ExitApp(); });
             _tray.ContextMenuStrip = menu;
+            _trayMenu = menu;
             _tray.DoubleClick += delegate { ShowMain(); };
         }
 
@@ -429,10 +512,11 @@ namespace LiveMonitor
         {
             if (_rowByKey.ContainsKey(room.Key)) return;
             string title = string.IsNullOrEmpty(room.LastTitle) ? "—" : room.LastTitle;
+            string area = string.IsNullOrEmpty(room.Area) ? "—" : room.Area;
             string lastCheck = room.LastCheckAt == null ? "—" : ((DateTime)room.LastCheckAt).ToString("HH:mm:ss");
-            string lastLive = room.LastLiveAt == null ? "—" : ((DateTime)room.LastLiveAt).ToString("MM-dd HH:mm");
+            string lastLive = RoomItem.FormatLastLive(room.LastLiveAt);
             int idx = _grid.Rows.Add(InitialStatus(room.LastStatus), room.DisplayName,
-                PlatformApi.PlatformName(room.Platform), room.Id, title,
+                PlatformApi.PlatformName(room.Platform), area, room.Id, title,
                 room.Notify ? "开" : "关", lastCheck, lastLive);
             _grid.Rows[idx].Tag = room;
             _rowByKey[room.Key] = idx;
@@ -448,6 +532,8 @@ namespace LiveMonitor
 
         void HandleEvent(MonitorEvent ev)
         {
+            if (IsDisposed || Disposing || _forceExit) return;
+            if (ev == null || ev.Room == null || ev.Result == null) return;
             var room = ev.Room;
             var res = ev.Result;
             bool changed = false;
@@ -467,19 +553,42 @@ namespace LiveMonitor
                 room.LastStatus = stKey;
                 changed = true;
             }
+
+            // 分区/分类：每轮检测都更新（平台未返回时不覆盖已有值，避免网络异常把分区清空）
+            if (res.State != LiveState.Error && !string.IsNullOrEmpty(res.Area) && room.Area != res.Area)
+            {
+                Log.Info("area " + room.Key + ": " + (room.Area == null ? "" : room.Area) + " → " + res.Area);
+                room.Area = res.Area;
+                changed = true;
+            }
+
             if (ev.BecameLive)
             {
-                // prefer the REAL live-start time reported by the platform
+                // prefer the REAL live-start time reported by the platform; only a
+                // plausible value is accepted (RoomMonitor already sanitized it),
+                // otherwise fall back to the moment we detected the live state
                 room.LastLiveAt = res.LiveStartAt ?? DateTime.Now;
                 changed = true;
             }
-            else if (res.State == LiveState.Live && res.LiveStartAt != null)
+            else if (res.State == LiveState.Live)
             {
-                // while still live, correct the record with the real start time
-                if (room.LastLiveAt == null
-                    || Math.Abs((((DateTime)room.LastLiveAt) - ((DateTime)res.LiveStartAt)).TotalMinutes) > 1)
+                // while still live, correct the record with the platform time; a
+                // >10 min jump means a new session (or a detection-time fallback
+                // being refined), smaller differences are jitter and are ignored
+                if (res.LiveStartAt != null)
                 {
-                    room.LastLiveAt = res.LiveStartAt;
+                    if (room.LastLiveAt == null
+                        || Math.Abs((((DateTime)room.LastLiveAt) - ((DateTime)res.LiveStartAt)).TotalMinutes) > 10)
+                    {
+                        room.LastLiveAt = res.LiveStartAt;
+                        changed = true;
+                    }
+                }
+                else if (room.LastLiveAt == null)
+                {
+                    // platform doesn't report a start time at all (huya/douyin/...):
+                    // use our detection time so the column is never wrong-looking
+                    room.LastLiveAt = DateTime.Now;
                     changed = true;
                 }
             }
@@ -490,7 +599,7 @@ namespace LiveMonitor
                 changed = true;
             }
             room.LastCheckAt = DateTime.Now;
-            if (changed) _cfg.Save();
+            if (changed && !_cfg.Save()) Log.Error("config save failed (room " + room.Key + ")");
 
             UpdateRow(room, res);
 
@@ -516,15 +625,18 @@ namespace LiveMonitor
             if (!_rowByKey.TryGetValue(room.Key, out idx)) return;
             if (idx < 0 || idx >= _grid.Rows.Count) return;
             var row = _grid.Rows[idx];
-            row.Cells[0].Value = StatusText(res);
-            row.Cells[1].Value = room.DisplayName;
-            row.Cells[4].Value = string.IsNullOrEmpty(res.Title) ? "—" : res.Title;
-            row.Cells[5].Value = room.Notify ? "开" : "关";
-            row.Cells[6].Value = DateTime.Now.ToString("HH:mm:ss");
-            row.Cells[7].Value = room.LastLiveAt == null ? "—" : ((DateTime)room.LastLiveAt).ToString("MM-dd HH:mm");
+            row.Cells[COL_STATUS].Value = StatusText(res);
+            row.Cells[COL_NAME].Value = room.DisplayName;
+            row.Cells[COL_AREA].Value = string.IsNullOrEmpty(room.Area) ? "—" : room.Area;
+            row.Cells[COL_TITLE].Value = string.IsNullOrEmpty(res.Title) ? "—" : res.Title;
+            row.Cells[COL_NOTIFY].Value = room.Notify ? "开" : "关";
+            row.Cells[COL_CHECK].Value = DateTime.Now.ToString("HH:mm:ss");
+            row.Cells[COL_LIVE].Value = RoomItem.FormatLastLive(room.LastLiveAt);
             string tip = string.IsNullOrEmpty(res.Title) ? "" : res.Title;
+            if (!string.IsNullOrEmpty(room.Area)) tip = "分区: " + room.Area + (tip.Length > 0 ? "\r\n" + tip : "");
             if (!string.IsNullOrEmpty(res.Error)) tip = (tip.Length > 0 ? tip + "\r\n" : "") + res.Error;
-            row.Cells[4].ToolTipText = tip;
+            row.Cells[COL_TITLE].ToolTipText = tip;
+            row.Cells[COL_AREA].ToolTipText = string.IsNullOrEmpty(room.Area) ? "" : room.Area;
             row.Tag = room;
         }
 
@@ -569,7 +681,8 @@ namespace LiveMonitor
 
         void UpdateStatus()
         {
-            if (_statusLabel == null || _monitor == null) return;
+            if (IsDisposed || Disposing) return;
+            if (_statusLabel == null || _monitor == null || _grid == null) return;
             string pfx;
             if (_monitor.Paused) pfx = "已暂停监测";
             else if (_checking) pfx = "正在检测…";
@@ -579,10 +692,30 @@ namespace LiveMonitor
                 ? "尚未完成检测"
                 : "上次检测 " + ((DateTime)_monitor.LastCheckEnd).ToString("HH:mm:ss");
 
-            _statusLabel.Text = string.Format(
+            int live = _monitor.LiveCount;
+            string statusText = string.Format(
                 "{0} · 每 {1} 秒检测一次 · 共 {2} 个房间 · {3} 个正在直播 · {4}",
-                pfx, _cfg.IntervalSec, _grid.Rows.Count, _monitor.LiveCount, last);
-            _tray.Text = "直播监测" + (_monitor.LiveCount > 0 ? " · " + _monitor.LiveCount + " 个直播中" : "");
+                pfx, _cfg.IntervalSec, _grid.Rows.Count, live, last);
+            if (_statusLabel.Text != statusText) _statusLabel.Text = statusText;
+
+            // NotifyIcon.Text is limited to 63 chars; only touch the shell when the
+            // text really changes (the .NET setter would skip it anyway, but being
+            // explicit keeps the shell interaction minimal and auditable).
+            string trayText = "直播监测" + (live > 0 ? " · " + live + " 个直播中" : "");
+            if (trayText.Length > 63) trayText = trayText.Substring(0, 63);
+            try
+            {
+                if (_tray != null && _tray.Text != trayText) _tray.Text = trayText;
+            }
+            catch (Exception ex) { Log.Exception(ex); }
+
+            // persist the one-time auto-start cleanup marker from the UI thread
+            if (_autostartCleanupDone && !_autostartCleanupSaved)
+            {
+                _autostartCleanupSaved = true;
+                _cfg.LegacyAutostartCleaned = true;
+                if (!_cfg.Save()) _autostartCleanupSaved = false;
+            }
         }
 
         // ---------------- actions ----------------
@@ -594,7 +727,9 @@ namespace LiveMonitor
                 if (f.ShowDialog(this) == DialogResult.OK && f.ResultRoom != null)
                 {
                     lock (_cfg) { _cfg.Rooms.Add(f.ResultRoom); }
-                    _cfg.Save();
+                    if (!_cfg.Save())
+                        MessageBox.Show(this, "写入配置文件失败,新增的直播间可能在重启后丢失。", "提示",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     AddRoomRow(f.ResultRoom);
                     _knownKeys.Remove(f.ResultRoom.Key);
                     _monitor.Wake();
@@ -627,7 +762,9 @@ namespace LiveMonitor
                     _mutedKeys.Remove(room.Key);
                 }
             }
-            _cfg.Save();
+            if (!_cfg.Save())
+                MessageBox.Show(this, "写入配置文件失败,删除操作可能在重启后失效。", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
             LoadRoomsToGrid();
         }
 
@@ -637,10 +774,10 @@ namespace LiveMonitor
             var room = _grid.SelectedRows[0].Tag as RoomItem;
             if (room == null) return;
             room.Notify = !room.Notify;
-            _cfg.Save();
+            if (!_cfg.Save()) Log.Error("config save failed (toggle notify)");
             int idx;
             if (_rowByKey.TryGetValue(room.Key, out idx) && idx < _grid.Rows.Count)
-                _grid.Rows[idx].Cells[5].Value = room.Notify ? "开" : "关";
+                _grid.Rows[idx].Cells[COL_NOTIFY].Value = room.Notify ? "开" : "关";
             _grid.Invalidate();
         }
 
@@ -674,6 +811,14 @@ namespace LiveMonitor
 
         void OpenRoom(RoomItem room)
         {
+            if (room == null) return;
+            if (!PlatformApi.IsHttpUrl(room.Url))
+            {
+                Log.Info("refused to open non-http url: " + (room.Url == null ? "" : room.Url));
+                MessageBox.Show(this, "该直播间的地址无效,请删除后重新添加。", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             try
             {
                 Process.Start(room.Url);
@@ -703,7 +848,11 @@ namespace LiveMonitor
                 }
             });
             popup.PlaceBottomRight(_popups.Count);
-            popup.FormClosed += delegate { _popups.Remove(popup); };
+            popup.FormClosed += delegate
+            {
+                _popups.Remove(popup);
+                RelayoutPopups();
+            };
             _popups.Add(popup);
             popup.Show();
             if (_popups.Count > 4)
@@ -711,6 +860,18 @@ namespace LiveMonitor
                 var oldest = _popups[0];
                 _popups.RemoveAt(0);
                 try { oldest.Close(); } catch { }
+            }
+        }
+
+        /// <summary>Re-stacks the remaining popups after one closes, so they do not
+        /// leave holes on screen.</summary>
+        void RelayoutPopups()
+        {
+            for (int i = 0; i < _popups.Count; i++)
+            {
+                var p = _popups[i];
+                if (p == null || p.IsDisposed) continue;
+                try { p.PlaceBottomRight(i); } catch { }
             }
         }
 
@@ -727,21 +888,81 @@ namespace LiveMonitor
         void ExitApp()
         {
             _forceExit = true;
+            ClosePopups();
             Close();
+        }
+
+        void ClosePopups()
+        {
+            for (int i = _popups.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    var p = _popups[i];
+                    if (p != null && !p.IsDisposed) p.Close();
+                }
+                catch { }
+            }
+            _popups.Clear();
+        }
+
+        /// <summary>Logs handle/GDI/memory usage once an hour so a long-run leak is
+        /// visible in app.log without needing Process Explorer.</summary>
+        void LogHealth()
+        {
+            try
+            {
+                var p = Process.GetCurrentProcess();
+                int gdi = -1, usr = -1;
+                IntPtr h = OpenProcess(0x1000, false, p.Id);
+                if (h != IntPtr.Zero)
+                {
+                    gdi = (int)GetGuiResources(h, 0);
+                    usr = (int)GetGuiResources(h, 1);
+                    CloseHandle(h);
+                }
+                double minutes = 0;
+                try { minutes = (DateTime.Now - p.StartTime).TotalMinutes; } catch { }
+                Log.Info(string.Format(
+                    "health: gdi={0} user={1} handles={2} ws={3}MB threads={4} uptime={5:F0}min rooms={6} live={7}",
+                    gdi, usr, p.HandleCount, p.WorkingSet64 / (1024 * 1024), p.Threads.Count,
+                    minutes, _cfg.Rooms.Count, _monitor.LiveCount));
+            }
+            catch (Exception ex) { Log.Exception(ex); }
+        }
+
+        /// <summary>Explorer broadcasts "TaskbarCreated" after it (re)starts. Logging
+        /// it makes later "explorer.exe crashed again" reports much easier to correlate.</summary>
+        protected override void WndProc(ref Message m)
+        {
+            try
+            {
+                if (WM_TASKBARCREATED != 0 && m.Msg == (int)WM_TASKBARCREATED)
+                    Log.Info("shell restarted: TaskbarCreated received (tray icon re-registered)");
+            }
+            catch { }
+            base.WndProc(ref m);
         }
 
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            if (_cfg != null && _cfg.CloseToTray && WindowState == FormWindowState.Minimized)
+            if (_inResize) return;
+            _inResize = true;
+            try
             {
-                Hide();
-                ShowInTaskbar = false;
+                if (!_forceExit && _cfg != null && _cfg.CloseToTray && WindowState == FormWindowState.Minimized)
+                {
+                    Hide();
+                    ShowInTaskbar = false;
+                }
             }
+            finally { _inResize = false; }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            try { _exitReason = e.CloseReason.ToString(); } catch { }
             if (!_forceExit && _cfg.CloseToTray && e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
@@ -764,13 +985,23 @@ namespace LiveMonitor
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             _forceExit = true;
-            try { _monitor.Stop(); } catch { }
+            try { if (_uiTimer != null) { _uiTimer.Stop(); _uiTimer.Dispose(); } } catch { }
+            try { if (_bootTimer != null) { _bootTimer.Stop(); _bootTimer.Dispose(); } } catch { }
+            try { if (_healthTimer != null) { _healthTimer.Stop(); _healthTimer.Dispose(); } } catch { }
+            try { if (_monitor != null) { _monitor.Event -= OnMonitorEvent; _monitor.Stop(); } } catch { }
+            ClosePopups();
             try { _cfg.Save(); } catch { }
-            try { Log.Info("exit"); } catch { }
+            try { Log.Info("exit reason=" + (_exitReason.Length == 0 ? "unknown" : _exitReason)); } catch { }
             if (_tray != null)
             {
-                _tray.Visible = false;
-                _tray.Dispose();
+                try { _tray.Visible = false; } catch { }
+                try { _tray.Dispose(); } catch { }
+                _tray = null;
+            }
+            if (_trayMenu != null)
+            {
+                try { _trayMenu.Dispose(); } catch { }
+                _trayMenu = null;
             }
             base.OnFormClosed(e);
         }

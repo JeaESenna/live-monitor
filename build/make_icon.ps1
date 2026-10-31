@@ -1,5 +1,11 @@
 # Generate app icon: white rounded square, black text "ZhiBoJianCe" (U+76F4 U+64AD U+76D1 U+6D4B)
 # arranged in a 2x2 tian-zi grid, reading left-to-right then top-to-bottom.
+#
+# ICO format note: Windows only officially supports PNG-compressed entries for
+# the 256x256 size. Small sizes MUST be classic 32bpp BMP/DIB entries, otherwise
+# legacy GDI/shell icon code paths (and .NET's Icon.ToBitmap) can misbehave.
+# We therefore emit 16/20/24/32/40/48/64 as DIB entries and only 256 as PNG.
+#
 # ASCII-only script (PS 5.1 compatible). Chinese chars embedded via code points.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -71,51 +77,106 @@ function New-IconBitmap([int]$size, [bool]$withGrid) {
     return $bmp
 }
 
-function Get-PngBytes([int]$size) {
-    $withGrid = $size -ge 40
-    $bmp = New-IconBitmap $size $withGrid
+# ---- 32bpp BMP/DIB ICO entry: BITMAPINFOHEADER + bottom-up BGRA + AND mask ----
+function Get-DibEntry([System.Drawing.Bitmap]$bmp) {
+    $size = $bmp.Width
+    $rect = New-Object System.Drawing.Rectangle(0, 0, $size, $size)
+    $data = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $stride = $data.Stride
+    $raw = New-Object byte[] ($stride * $size)
+    [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $raw, 0, $raw.Length)
+    $bmp.UnlockBits($data)
+
+    $maskRow = [int]([Math]::Floor(($size + 31) / 32)) * 4
+    $ms = New-Object System.IO.MemoryStream
+    $bw = New-Object System.IO.BinaryWriter($ms)
+    # BITMAPINFOHEADER (40 bytes), biHeight = 2 * size (XOR bitmap + AND mask)
+    $bw.Write([UInt32]40)
+    $bw.Write([Int32]$size)
+    $bw.Write([Int32]($size * 2))
+    $bw.Write([UInt16]1)
+    $bw.Write([UInt16]32)
+    $bw.Write([UInt32]0)                        # BI_RGB
+    $bw.Write([UInt32]($size * $size * 4))      # biSizeImage
+    $bw.Write([Int32]0)                         # biXPelsPerMeter
+    $bw.Write([Int32]0)                         # biYPelsPerMeter
+    $bw.Write([UInt32]0)                        # biClrUsed
+    $bw.Write([UInt32]0)                        # biClrImportant
+    # XOR bitmap: bottom-up rows, BGRA
+    for ($y = $size - 1; $y -ge 0; $y--) {
+        $rowStart = $y * $stride
+        for ($x = 0; $x -lt ($size * 4); $x++) {
+            $bw.Write([byte]$raw[$rowStart + $x])
+        }
+    }
+    # AND mask (1 = transparent), bottom-up; Windows ignores it for 32bpp icons
+    # but legacy code paths still use it, so derive it from the alpha channel.
+    for ($y = $size - 1; $y -ge 0; $y--) {
+        $rowStart = $y * $stride
+        $mrow = New-Object byte[] $maskRow
+        for ($x = 0; $x -lt $size; $x++) {
+            if ($raw[$rowStart + $x * 4 + 3] -lt 128) {
+                $byteIndex = [int][Math]::Floor($x / 8)
+                $bit = 7 - ($x % 8)
+                $mrow[$byteIndex] = [byte]($mrow[$byteIndex] -bor (1 -shl $bit))
+            }
+        }
+        $bw.Write([byte[]]$mrow)
+    }
+    $bw.Flush()
+    $arr = $ms.ToArray()
+    $bw.Dispose()
+    $ms.Dispose()
+    return , $arr
+}
+
+function Get-PngBytes([System.Drawing.Bitmap]$bmp) {
     $ms = New-Object System.IO.MemoryStream
     $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
     $bytes = $ms.ToArray()
-    $ms.Dispose(); $bmp.Dispose()
-    return ,$bytes
+    $ms.Dispose()
+    return , $bytes
 }
 
-$sizes = @(256, 128, 64, 48, 40, 32, 24, 20, 16)
-$pngs = New-Object System.Collections.ArrayList
-foreach ($s in $sizes) {
-    $data = Get-PngBytes $s
-    [void]$pngs.Add($data)
+# ---- 256 preview png (also used as the in-app image resource) ----
+$bmp256 = New-IconBitmap 256 $true
+[System.IO.File]::WriteAllBytes((Join-Path $resDir 'app_preview.png'), (Get-PngBytes $bmp256))
+
+# ---- assemble a spec-compliant multi-size ICO (small = DIB, 256 = PNG) ----
+$entries = New-Object System.Collections.ArrayList
+foreach ($size in @(16, 20, 24, 32, 40, 48, 64)) {
+    $bmp = New-IconBitmap $size ($size -ge 40)
+    $dib = Get-DibEntry $bmp
+    $bmp.Dispose()
+    [void]$entries.Add(@{ Size = $size; Data = [byte[]]$dib })
+    Write-Output ("icon size " + $size + ": DIB " + $dib.Length + " bytes")
 }
+[void]$entries.Add(@{ Size = 256; Data = [byte[]](Get-PngBytes $bmp256) })
+$bmp256.Dispose()
+Write-Output "icon size 256: PNG"
 
-# save 256 preview png
-$preview = Get-PngBytes 256
-[System.IO.File]::WriteAllBytes((Join-Path $resDir 'app_preview.png'), $preview)
-
-# assemble multi-size ICO (PNG-compressed entries)
 $ms = New-Object System.IO.MemoryStream
 $bw = New-Object System.IO.BinaryWriter($ms)
 $bw.Write([UInt16]0)   # reserved
 $bw.Write([UInt16]1)   # type: icon
-$bw.Write([UInt16]$pngs.Count)
-$offset = 6 + 16 * $pngs.Count
-for ($i = 0; $i -lt $pngs.Count; $i++) {
-    $s = $sizes[$i]
-    $data = $pngs[$i]
-    $dim = if ($s -eq 256) { 0 } else { $s }
-    $bw.Write([byte]$dim)   # width
-    $bw.Write([byte]$dim)   # height
-    $bw.Write([byte]0)      # colors
-    $bw.Write([byte]0)      # reserved
-    $bw.Write([UInt16]1)    # planes
-    $bw.Write([UInt16]32)   # bpp
-    $bw.Write([UInt32]$data.Length)
-    $bw.Write([UInt32]$offset)
-    $offset += $data.Length
+$bw.Write([UInt16]$entries.Count)
+$offset = 6 + 16 * $entries.Count
+foreach ($e in $entries) {
+    $dim = if ($e.Size -eq 256) { 0 } else { $e.Size }
+    $bw.Write([byte]$dim)                       # width (0 = 256)
+    $bw.Write([byte]$dim)                       # height (0 = 256)
+    $bw.Write([byte]0)                          # color count
+    $bw.Write([byte]0)                          # reserved
+    $bw.Write([UInt16]1)                        # planes
+    $bw.Write([UInt16]32)                       # bpp
+    $bw.Write([UInt32]$e.Data.Length)           # bytes in resource
+    $bw.Write([UInt32]$offset)                  # image offset
+    $offset += $e.Data.Length
 }
-foreach ($p in $pngs) { $bw.Write([byte[]]$p) }
+foreach ($e in $entries) { $bw.Write([byte[]]$e.Data) }
 $bw.Flush()
 $icoPath = Join-Path $resDir 'app.ico'
 [System.IO.File]::WriteAllBytes($icoPath, $ms.ToArray())
-$bw.Dispose(); $ms.Dispose()
+$bw.Dispose()
+$ms.Dispose()
 Write-Output ("icon written: " + $icoPath + " (" + (Get-Item $icoPath).Length + " bytes)")

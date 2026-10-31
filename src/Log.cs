@@ -1,15 +1,18 @@
 using System;
 using System.IO;
+using System.Text;
 
 namespace LiveMonitor
 {
     public static class Log
     {
+        const long MaxBytes = 1024 * 1024;      // rotate at 1 MB
         static readonly object _lock = new object();
         static string _dir;
 
         public static void Init(string dir)
         {
+            if (dir == _dir) return;
             _dir = dir;
             try { Directory.CreateDirectory(dir); } catch { }
         }
@@ -25,17 +28,39 @@ namespace LiveMonitor
         {
             try
             {
+                if (msg == null) msg = "";
+                if (msg.Length > 8000) msg = msg.Substring(0, 8000) + " ...(" + msg.Length + " chars truncated)";
                 lock (_lock)
                 {
-                    if (string.IsNullOrEmpty(_dir)) return;
-                    string file = Path.Combine(_dir, "app.log");
-                    try
-                    {
-                        if (File.Exists(file) && new FileInfo(file).Length > 1024 * 1024) File.Delete(file);
-                    }
-                    catch { }
+                    string dir = _dir;
+                    if (string.IsNullOrEmpty(dir)) return;
+                    try { Directory.CreateDirectory(dir); } catch { }
+                    string file = Path.Combine(dir, "app.log");
+                    RotateIfNeeded(file);
                     File.AppendAllText(file,
-                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [" + level + "] " + msg + Environment.NewLine);
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [" + level + "] " + msg + Environment.NewLine,
+                        new UTF8Encoding(false));
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Keeps one previous log (app.prev.log) instead of deleting the
+        /// whole history, so problems that show up after a long run can still be
+        /// diagnosed from the log.</summary>
+        static void RotateIfNeeded(string file)
+        {
+            try
+            {
+                if (!File.Exists(file)) return;
+                if (new FileInfo(file).Length <= MaxBytes) return;
+                string prev = Path.Combine(Path.GetDirectoryName(file), "app.prev.log");
+                try { if (File.Exists(prev)) File.Delete(prev); } catch { }
+                try { File.Move(file, prev); }
+                catch
+                {
+                    // move can fail (e.g. another reader); fall back to truncating
+                    try { File.WriteAllText(file, ""); } catch { }
                 }
             }
             catch { }

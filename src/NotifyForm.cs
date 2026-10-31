@@ -2,7 +2,9 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Threading;
 using System.Windows.Forms;
+using WinFormsTimer = System.Windows.Forms.Timer;
 
 namespace LiveMonitor
 {
@@ -19,9 +21,10 @@ namespace LiveMonitor
         readonly Icon _icon;
         readonly Action _onMute;
         FlatButton _btnOpen, _btnClose, _btnMute;
-        Timer _fadeTimer, _autoCloseTimer, _loopSoundTimer, _autoOpenTimer;
+        WinFormsTimer _fadeTimer, _autoCloseTimer, _loopSoundTimer, _autoOpenTimer;
         Label _autoHint;
         bool _userActed;
+        bool _closed;
         int _autoOpenLeft;
 
         public string RoomKey { get { return _room.Key; } }
@@ -45,7 +48,7 @@ namespace LiveMonitor
 
             BuildUi();
 
-            _fadeTimer = new Timer();
+            _fadeTimer = new WinFormsTimer();
             _fadeTimer.Interval = 15;
             _fadeTimer.Tick += delegate
             {
@@ -57,9 +60,9 @@ namespace LiveMonitor
             // stays open until the user acts (default 0); auto-close only if configured
             if (_cfg.PopupAutoCloseSec > 0)
             {
-                _autoCloseTimer = new Timer();
+                _autoCloseTimer = new WinFormsTimer();
                 _autoCloseTimer.Interval = _cfg.PopupAutoCloseSec * 1000;
-                _autoCloseTimer.Tick += delegate { Close(); };
+                _autoCloseTimer.Tick += delegate { CloseOnce(); };
                 _autoCloseTimer.Start();
             }
 
@@ -67,7 +70,7 @@ namespace LiveMonitor
             // window (X / 忽略 / 不再提醒 / 打开直播间 / auto-close) stops it
             if (_cfg.LoopSoundSec > 0)
             {
-                _loopSoundTimer = new Timer();
+                _loopSoundTimer = new WinFormsTimer();
                 _loopSoundTimer.Interval = _cfg.LoopSoundSec * 1000;
                 _loopSoundTimer.Tick += delegate { Sound.PlayChime(_cfg.SoundOn, _cfg.SoundFile); };
                 _loopSoundTimer.Start();
@@ -81,10 +84,10 @@ namespace LiveMonitor
                 _autoHint.Text = "3 秒后自动打开直播间…";
                 _autoHint.Font = Ui.F(8, FontStyle.Regular);
                 _autoHint.ForeColor = Ui.SubText;
-                _autoHint.Bounds = new Rectangle(20, 138, 80, 24);
+                _autoHint.Bounds = new Rectangle(20, 138, 190, 24);
                 _autoHint.TextAlign = ContentAlignment.MiddleLeft;
                 Controls.Add(_autoHint);
-                _autoOpenTimer = new Timer();
+                _autoOpenTimer = new WinFormsTimer();
                 _autoOpenTimer.Interval = 1000;
                 _autoOpenTimer.Tick += AutoOpenTick;
                 _autoOpenTimer.Start();
@@ -97,7 +100,7 @@ namespace LiveMonitor
         {
             if (_userActed)
             {
-                _autoOpenTimer.Stop();
+                StopTimer(ref _autoOpenTimer);
                 return;
             }
             _autoOpenLeft--;
@@ -109,8 +112,8 @@ namespace LiveMonitor
             }
             if (_autoOpenLeft <= 0)
             {
-                _autoOpenTimer.Stop();
-                OpenRoom(null, EventArgs.Empty);
+                StopTimer(ref _autoOpenTimer);
+                OpenRoomAsync();
             }
         }
 
@@ -131,7 +134,7 @@ namespace LiveMonitor
 
         void BuildUi()
         {
-            if (_icon != null)
+            if (_icon != null && Ui.AppImage != null)
             {
                 var pic = new PictureBox();
                 pic.Bounds = new Rectangle(18, 18, 40, 40);
@@ -163,6 +166,8 @@ namespace LiveMonitor
             string info = string.IsNullOrEmpty(_res.Title) ? "正在直播" : _res.Title;
             if (!string.IsNullOrEmpty(_res.Sub) && _res.Sub != "网络异常")
                 info = "[" + _res.Sub + "] " + info;
+            if (!string.IsNullOrEmpty(_res.Area))
+                info = "[" + _res.Area + "] " + info;
             lblInfo.Text = info;
             lblInfo.Font = Ui.F(9, FontStyle.Regular);
             lblInfo.ForeColor = Ui.SubText;
@@ -178,7 +183,7 @@ namespace LiveMonitor
             _btnClose.Hover = Ui.Border;
             _btnClose.Fore = Ui.Text;
             _btnClose.Bounds = new Rectangle(100, 132, 72, 30);
-            _btnClose.Click += delegate { _userActed = true; Close(); };
+            _btnClose.Click += delegate { _userActed = true; CloseOnce(); };
             Controls.Add(_btnClose);
 
             _btnMute = new FlatButton();
@@ -191,7 +196,7 @@ namespace LiveMonitor
             {
                 _userActed = true;
                 try { if (_onMute != null) _onMute(); } catch { }
-                Close();
+                CloseOnce();
             };
             Controls.Add(_btnMute);
 
@@ -202,25 +207,67 @@ namespace LiveMonitor
             Controls.Add(_btnOpen);
         }
 
+        void CloseOnce()
+        {
+            if (_closed) return;
+            _closed = true;
+            try { Close(); } catch { }
+        }
+
+        static void StopTimer(ref WinFormsTimer t)
+        {
+            try
+            {
+                if (t != null) { t.Stop(); t.Dispose(); }
+            }
+            catch { }
+            t = null;
+        }
+
+        /// <summary>Auto-open runs the shell execute on a background thread so a
+        /// slow/broken URL handler can never freeze the UI thread.</summary>
+        void OpenRoomAsync()
+        {
+            _userActed = true;
+            string url = _room.Url;
+            if (PlatformApi.IsHttpUrl(url))
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try { Process.Start(url); }
+                    catch (Exception ex) { Log.Exception(ex); }
+                });
+            }
+            else
+            {
+                Log.Info("refused to auto-open non-http url: " + (url == null ? "" : url));
+            }
+            CloseOnce();
+        }
+
         void OpenRoom(object sender, EventArgs e)
         {
             _userActed = true;
             try
             {
-                Process.Start(_room.Url);
+                if (PlatformApi.IsHttpUrl(_room.Url))
+                    Process.Start(_room.Url);
+                else
+                    Log.Info("refused to open non-http url from popup: " + (_room.Url == null ? "" : _room.Url));
             }
             catch (Exception ex)
             {
                 Log.Exception(ex);
             }
-            Close();
+            CloseOnce();
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            try { if (_autoCloseTimer != null) _autoCloseTimer.Stop(); } catch { }
-            try { if (_loopSoundTimer != null) _loopSoundTimer.Stop(); } catch { }
-            try { if (_autoOpenTimer != null) _autoOpenTimer.Stop(); } catch { }
+            StopTimer(ref _fadeTimer);
+            StopTimer(ref _autoCloseTimer);
+            StopTimer(ref _loopSoundTimer);
+            StopTimer(ref _autoOpenTimer);
             base.OnFormClosed(e);
         }
 
@@ -237,8 +284,12 @@ namespace LiveMonitor
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            using (var path = Ui.RoundRect(new Rectangle(0, 0, Width, Height), 12))
-                Region = new Region(path);
+            try
+            {
+                using (var path = Ui.RoundRect(new Rectangle(0, 0, Width, Height), 12))
+                    Region = new Region(path);
+            }
+            catch { }
         }
 
         public void PlaceBottomRight(int index)

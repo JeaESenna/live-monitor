@@ -15,6 +15,7 @@ namespace LiveMonitor
         public string Title = "";
         public string Owner = "";
         public string Sub = "";     // e.g. "轮播中"
+        public string Area = "";    // live area/zone, e.g. "最终幻想14" (sub-area preferred; parent area used when absent)
         public string Error = "";
         public DateTime? LiveStartAt = null;   // real live-start time reported by the platform
         public string Src = "";     // which data source produced this result (for diagnostics)
@@ -161,6 +162,51 @@ namespace LiveMonitor
             }
             outPlatform = detected;
             return true;
+        }
+
+        /// <summary>
+        /// True only for absolute http/https URLs. Everything else is refused before
+        /// it reaches Process.Start / ShellExecute, so a hand-edited or tampered
+        /// config.json cannot make the program launch an arbitrary local program or
+        /// a file:// / protocol URL.
+        /// </summary>
+        /// <summary>Picks the area to display: the specific sub-area (小类) is preferred,
+        /// e.g. parent "网游" + area "最终幻想14" -> "最终幻想14"; when the platform
+        /// doesn't provide a sub-area the parent area (大类) is used instead.</summary>
+        public static string PickArea(string parent, string area)
+        {
+            area = Unescape((area == null ? "" : area).Trim());
+            parent = Unescape((parent == null ? "" : parent).Trim());
+            if (area.Length > 0) return area;
+            return parent;
+        }
+
+        /// <summary>Rejects implausible live-start times reported by a platform (a bad
+        /// regex match, a stale/cached page, a wrong time zone...).  Only values within
+        /// [now-30 days, now+10 minutes] are accepted; anything else becomes null and
+        /// the caller falls back to its own detection time.</summary>
+        public static DateTime? SanitizeLiveStartAt(DateTime? t, DateTime now)
+        {
+            if (t == null) return null;
+            DateTime d = (DateTime)t;
+            if (d > now.AddMinutes(10)) return null;
+            if (d < now.AddDays(-30)) return null;
+            return d;
+        }
+
+        public static bool IsHttpUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return false;
+            string u = url.Trim();
+            if (u.Length == 0 || u.Length > 2048) return false;
+            for (int i = 0; i < u.Length; i++)
+            {
+                char c = u[i];
+                if (c < 0x20 || c == 0x7f) return false;   // control chars / CRLF / NUL
+            }
+            Uri uri;
+            if (!Uri.TryCreate(u, UriKind.Absolute, out uri)) return false;
+            return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
         }
 
         public static bool BuildUrlForRoom(string platform, string id, out string url)
@@ -380,6 +426,7 @@ namespace LiveMonitor
             bool live = GetStr(d, "room_status") == "1";
             var res = new CheckResult(live ? LiveState.Live : LiveState.Offline,
                 GetStr(d, "room_name"), GetStr(d, "owner_name"));
+            res.Area = GetStr(d, "cate_name");
             if (live) res.LiveStartAt = ParseDate(GetStr(d, "start_time"));
             return res;
         }
@@ -393,6 +440,7 @@ namespace LiveMonitor
             bool live = GetStr(room, "show_status") == "1";
             var res = new CheckResult(live ? LiveState.Live : LiveState.Offline,
                 GetStr(room, "room_name"), GetStr(room, "nickname"));
+            res.Area = GetStr(room, "cate_name");
             if (live) res.LiveStartAt = ParseDate(GetStr(room, "start_time"));
             return res;
         }
@@ -578,19 +626,33 @@ namespace LiveMonitor
             LiveState state = (st == 1 || st == 2) ? LiveState.Live : LiveState.Offline;
             var res = new CheckResult(state, title, uname);
             if (st == 2) res.Sub = "轮播中";
+
+            // area/zone: "parent_area_name":"网游","area_name":"最终幻想14"
+            string parentArea = RegexGroup(html, "\"parent_area_name\"\\s*:\\s*\"([^\"]{1,40})\"");
+            string area = RegexGroup(html, "\"area_name\"\\s*:\\s*\"([^\"]{1,60})\"");
+            res.Area = PickArea(parentArea, area);
+
             if (state == LiveState.Live)
             {
-                // roomInitRes style: "live_time":"2026-08-15 14:00:00"
-                var tm = Regex.Match(tail, "\"live_time\"\\s*:\\s*\"([^\"]{4,30})\"");
-                if (!tm.Success) tm = Regex.Match(html, "\"live_time\"\\s*:\\s*\"([^\"]{4,30})\"");
-                if (tm.Success) res.LiveStartAt = ParseDate(tm.Groups[1].Value);
-
                 // roomInfoRes (getInfoByRoom) style: "live_start_time":1786793400
+                var um = Regex.Match(tail, "\"live_start_time\"\\s*:\\s*(\\d{9,12})");
+                if (!um.Success) um = Regex.Match(html, "\"live_start_time\"\\s*:\\s*(\\d{9,12})");
+                if (um.Success) res.LiveStartAt = ParseUnix(long.Parse(um.Groups[1].Value));
+
+                // older page style: "live_time":"2026-08-15 14:00:00"
                 if (res.LiveStartAt == null)
                 {
-                    var um = Regex.Match(tail, "\"live_start_time\"\\s*:\\s*(\\d{9,12})");
-                    if (!um.Success) um = Regex.Match(html, "\"live_start_time\"\\s*:\\s*(\\d{9,12})");
-                    if (um.Success) res.LiveStartAt = ParseUnix(long.Parse(um.Groups[1].Value));
+                    var tm = Regex.Match(tail, "\"live_time\"\\s*:\\s*\"([^\"]{4,30})\"");
+                    if (!tm.Success) tm = Regex.Match(html, "\"live_time\"\\s*:\\s*\"([^\"]{4,30})\"");
+                    if (tm.Success) res.LiveStartAt = ParseDate(tm.Groups[1].Value);
+                }
+
+                // roomInitRes style: "live_time":1793446476 (unix seconds)
+                if (res.LiveStartAt == null)
+                {
+                    var um2 = Regex.Match(tail, "\"live_time\"\\s*:\\s*(\\d{9,12})");
+                    if (!um2.Success) um2 = Regex.Match(html, "\"live_time\"\\s*:\\s*(\\d{9,12})");
+                    if (um2.Success) res.LiveStartAt = ParseUnix(long.Parse(um2.Groups[1].Value));
                 }
 
                 // camelCase variant: "liveTime":"..."
@@ -624,6 +686,7 @@ namespace LiveMonitor
             LiveState st = (live == 1 || live == 2) ? LiveState.Live : LiveState.Offline;
             var res = new CheckResult(st, title, uname);
             if (live == 2) res.Sub = "轮播中";
+            res.Area = PickArea(GetStr(ri, "parent_area_name"), GetStr(ri, "area_name"));
             if (st == LiveState.Live) res.LiveStartAt = ParseUnix(GetInt(ri, "live_start_time"));
             return res;
         }
@@ -638,6 +701,7 @@ namespace LiveMonitor
             LiveState st = (live == 1 || live == 2) ? LiveState.Live : LiveState.Offline;
             var res = new CheckResult(st, GetStr(d, "title"), "");
             if (live == 2) res.Sub = "轮播中";
+            res.Area = PickArea(GetStr(d, "parent_area_name"), GetStr(d, "area_name"));
             if (st == LiveState.Live) res.LiveStartAt = ParseDate(GetStr(d, "live_time"));
             return res;
         }
@@ -682,7 +746,12 @@ namespace LiveMonitor
             string title = RegexGroup(html, "\"sRoomName\"\\s*:\\s*\"([^\"]{1,120})\"");
             if (title.Length == 0)
                 title = RegexGroup(html, "\"introduction\"\\s*:\\s*\"([^\"]{1,120})\"");
-            return new CheckResult(live ? LiveState.Live : LiveState.Offline, title, nick);
+            var res = new CheckResult(live ? LiveState.Live : LiveState.Offline, title, nick);
+            // 虎牙页面里的分区/游戏名："gameFullName":"英雄联盟"
+            res.Area = RegexGroup(html, "\"gameFullName\"\\s*:\\s*\"([^\"]{1,40})\"");
+            if (res.Area.Length == 0)
+                res.Area = RegexGroup(html, "\"gameName\"\\s*:\\s*\"([^\"]{1,40})\"");
+            return res;
         }
 
         // ---------------- douyin ----------------
@@ -726,16 +795,26 @@ namespace LiveMonitor
                 {
                     var r1 = new CheckResult(LiveState.Live);
                     r1.Src = "douyin-page";
+                    r1.Area = DouyinAreaFromPage(page);
                     return r1;
                 }
                 if (st == 4)
                 {
                     var r2 = new CheckResult(LiveState.Offline);
                     r2.Src = "douyin-page";
+                    r2.Area = DouyinAreaFromPage(page);
                     return r2;
                 }
             }
             return new CheckResult(LiveState.Unknown) { Error = "抖音接口受限,未能确认状态" };
+        }
+
+        static string DouyinAreaFromPage(string page)
+        {
+            string area = RegexGroup(page, "\"game_tag\"\\s*:\\s*\"([^\"]{1,40})\"");
+            if (area.Length == 0) area = RegexGroup(page, "\"game_name\"\\s*:\\s*\"([^\"]{1,40})\"");
+            if (area.Length == 0) area = RegexGroup(page, "\"partition_name\"\\s*:\\s*\"([^\"]{1,40})\"");
+            return area;
         }
 
         public static CheckResult ParseDouyinEnter(string txt)
@@ -755,8 +834,10 @@ namespace LiveMonitor
                 string nick = "";
                 var owner = room.ContainsKey("owner") ? room["owner"] as Dictionary<string, object> : null;
                 if (owner != null) nick = GetStr(owner, "nickname");
-                if (status == 2) return new CheckResult(LiveState.Live, title, nick);
-                if (status == 4) return new CheckResult(LiveState.Offline, title, nick);
+                string area = GetStr(room, "game_tag");
+                if (area.Length == 0) area = GetStr(room, "game_name");
+                if (status == 2) return new CheckResult(LiveState.Live, title, nick) { Area = area };
+                if (status == 4) return new CheckResult(LiveState.Offline, title, nick) { Area = area };
                 return null;
             }
             catch { return null; }
@@ -792,7 +873,11 @@ namespace LiveMonitor
             if (nm.Success) name = Unescape(nm.Groups[1].Value);
 
             string title = RegexGroup(html, "\"caption\"\\s*:\\s*\"([^\"]{1,120})\"");
-            return new CheckResult(live ? LiveState.Live : LiveState.Offline, title, name);
+            var res = new CheckResult(live ? LiveState.Live : LiveState.Offline, title, name);
+            res.Area = RegexGroup(html, "\"gameName\"\\s*:\\s*\"([^\"]{1,40})\"");
+            if (res.Area.Length == 0)
+                res.Area = RegexGroup(html, "\"game_name\"\\s*:\\s*\"([^\"]{1,40})\"");
+            return res;
         }
     }
 }

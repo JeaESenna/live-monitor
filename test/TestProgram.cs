@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -7,11 +9,13 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using LiveMonitor;
 
-/// <summary>Console self-test: exercises parsers, config and resources offline.</summary>
+/// <summary>Console self-test: exercises parsers, config, resources and the
+/// long-run safety features offline (no network required).</summary>
 class TestProgram
 {
     static int _pass, _fail;
     static readonly StringBuilder _log = new StringBuilder();
+    static string _testDataDir;
 
     static void Check(string name, bool ok, string detail)
     {
@@ -44,6 +48,14 @@ class TestProgram
 
     static int Main()
     {
+        // isolate the self-test from the user's real config/logs
+        try
+        {
+            _testDataDir = Path.Combine(Path.GetTempPath(), "LiveMonitorSelfTest-" + Process.GetCurrentProcess().Id);
+            Environment.SetEnvironmentVariable("LIVEMONITOR_DATA_DIR", _testDataDir);
+        }
+        catch { }
+
         AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
         {
             LogCrash(e.ExceptionObject);
@@ -129,6 +141,41 @@ class TestProgram
         Check("bili page round", bp3 != null && bp3.State == LiveState.Live && bp3.Sub == "轮播中", bp3 == null ? "null" : bp3.Sub);
         Check("bili page unparseable", PlatformApi.ParseBiliLivePage("<html>nothing here</html>") == null, "");
 
+        // ---------- live area / 分区（优先小类，无小类时用大类） ----------
+        var ap = PlatformApi.ParseBiliLivePage("{\"live_status\":1,\"title\":\"pt\",\"uname\":\"pn\",\"parent_area_name\":\"网游\",\"area_name\":\"最终幻想14\",\"live_start_time\":1793446476}");
+        Check("bili page area prefers sub", ap != null && ap.Area == "最终幻想14", ap == null ? "null" : ap.Area);
+        Check("bili page area live_start unix",
+            ap != null && ap.LiveStartAt == PlatformApi.ParseUnix(1793446476), ap == null || ap.LiveStartAt == null ? "null" : ap.LiveStartAt.ToString());
+        var apParent = PlatformApi.ParseBiliLivePage("{\"live_status\":1,\"uname\":\"pn\",\"parent_area_name\":\"网游\"}");
+        Check("bili page area falls back to parent", apParent != null && apParent.Area == "网游", apParent == null ? "null" : apParent.Area);
+        var apOld = PlatformApi.ParseBiliLivePage("{\"live_status\":1,\"uname\":\"pn\",\"area_name\":\"虚拟主播\",\"live_time\":\"2026-10-31 09:15:13\"}");
+        Check("bili page area old style", apOld != null && apOld.Area == "虚拟主播"
+            && apOld.LiveStartAt != null && ((DateTime)apOld.LiveStartAt).ToString("yyyy-MM-dd HH:mm:ss") == "2026-10-31 09:15:13",
+            apOld == null ? "null" : apOld.Area + "/" + apOld.LiveStartAt);
+        var apIbr = PlatformApi.ParseBiliGetInfoByRoom(Json("{\"code\":0,\"data\":{\"room_info\":{\"live_status\":1,\"title\":\"gt\",\"live_start_time\":1793446476,\"parent_area_name\":\"单机游戏\",\"area_name\":\"深空当铺\"}}}"));
+        Check("bili getInfoByRoom area prefers sub", apIbr != null && apIbr.Area == "深空当铺", apIbr == null ? "null" : apIbr.Area);
+        var apGi = PlatformApi.ParseBiliGetInfo(Json("{\"code\":0,\"data\":{\"live_status\":1,\"title\":\"bt\",\"parent_area_name\":\"网游\",\"area_name\":\"DOTA2\"}}"));
+        Check("bili get_info area prefers sub", apGi.Area == "DOTA2", apGi.Area);
+        var apDy = PlatformApi.ParseDouyu("{\"error\":0,\"data\":{\"room_status\":\"1\",\"room_name\":\"t\",\"owner_name\":\"n\",\"cate_name\":\"DOTA2\"}}");
+        Check("douyu area", apDy.Area == "DOTA2", apDy.Area);
+        var apHy = PlatformApi.ParseHuyaHtml("{\"isOn\": true, \"sNick\":\"hn\", \"gameFullName\":\"英雄联盟\"}");
+        Check("huya area", apHy != null && apHy.Area == "英雄联盟", apHy == null ? "null" : apHy.Area);
+        var apDye = PlatformApi.ParseDouyinEnter("{\"data\":{\"data\":[{\"status\":2,\"title\":\"dt\",\"game_tag\":\"游戏\"}]}}");
+        Check("douyin area", apDye != null && apDye.Area == "游戏", apDye == null ? "null" : apDye.Area);
+        Check("pick area prefers sub", PlatformApi.PickArea("网游", "最终幻想14") == "最终幻想14", "");
+        Check("pick area parent fallback", PlatformApi.PickArea("网游", "") == "网游", "");
+        Check("pick area both empty", PlatformApi.PickArea(null, null) == "", "");
+
+        // ---------- live-start time sanitising (bad platform values are ignored) ----------
+        var now = DateTime.Now;
+        Check("sanitize live-start valid", PlatformApi.SanitizeLiveStartAt(now.AddHours(-2), now) != null, "");
+        Check("sanitize live-start future", PlatformApi.SanitizeLiveStartAt(now.AddHours(2), now) == null, "");
+        Check("sanitize live-start too old", PlatformApi.SanitizeLiveStartAt(now.AddDays(-60), now) == null, "");
+        Check("sanitize live-start null", PlatformApi.SanitizeLiveStartAt(null, now) == null, "");
+        Check("format last live month-day",
+            RoomItem.FormatLastLive(new DateTime(2026, 10, 31, 9, 15, 13)) == "10-31"
+            && RoomItem.FormatLastLive(null) == "—", RoomItem.FormatLastLive(new DateTime(2026, 10, 31, 9, 15, 13)));
+
         // ---------- real live-start time ----------
         var bp4 = PlatformApi.ParseBiliLivePage("{\"live_status\":1,\"live_time\":\"2026-08-15 14:30:00\",\"uname\":\"pn\"}");
         Check("bili page live_time",
@@ -181,29 +228,31 @@ class TestProgram
         // ---------- misc ----------
         Check("unescape \\uXXXX", PlatformApi.Unescape("\\u76f4\\u64ad") == "直播", PlatformApi.Unescape("\\u76f4\\u64ad"));
 
-        // ---------- config roundtrip (backup/restore the real config to avoid clobbering it) ----------
+        // ---------- config: roundtrip, atomic save/backup, corrupt recovery ----------
+        // (the whole self-test runs with LIVEMONITOR_DATA_DIR pointing at a temp
+        // dir, so the user's real config is never touched)
         string cfgPath = AppConfig.ConfigPath;
-        string backup = cfgPath + ".selftest.bak";
-        bool hadConfig = File.Exists(cfgPath);
-        if (hadConfig)
-        {
-            try { File.Copy(cfgPath, backup, true); } catch { backup = ""; }
-        }
-
         var cfg = new AppConfig();
         Check("config new defaults",
             cfg.LoopSoundSec == 60 && cfg.PopupAutoCloseSec == 0 && cfg.ConfigVer == 0
-            && cfg.AutoOpenRoom == false && cfg.SoundFile == "",
+            && cfg.AutoOpenRoom == false && cfg.SoundFile == "" && cfg.LegacyAutostartCleaned == false,
             cfg.LoopSoundSec + "/" + cfg.PopupAutoCloseSec + "/" + cfg.ConfigVer);
         var r1 = new RoomItem("douyu", "9999", "https://www.douyu.com/9999", "r1");
         r1.Notify = false;
         r1.LastStatus = "live";
         r1.LastLiveAt = DateTime.Now;
         r1.LastTitle = "记录标题";
+        r1.Area = "最终幻想14";
         cfg.Rooms.Add(r1);
         cfg.Rooms.Add(new RoomItem("bilibili", "6", "https://live.bilibili.com/6", ""));
+        cfg.Rooms.Add(null);                                      // must be dropped by Fixup
+        cfg.Rooms.Add(new RoomItem("bilibili", "6", "https://live.bilibili.com/6", "")); // duplicate
+        cfg.IntervalSec = 45;
         _log.AppendLine("INFO rooms before save: " + cfg.Rooms.Count);
         cfg.Save();
+        Check("config file created", File.Exists(cfgPath), cfgPath);
+        Check("config temp removed", !File.Exists(cfgPath + ".tmp"), "");
+
         var cfg2 = AppConfig.Load();
         _log.AppendLine("INFO rooms after load: " + cfg2.Rooms.Count);
         Check("config roundtrip count", cfg2.Rooms.Count == 2, cfg2.Rooms.Count.ToString());
@@ -216,23 +265,27 @@ class TestProgram
             Check("config roundtrip recorded state",
                 cfg2.Rooms[0].LastStatus == "live" && cfg2.Rooms[0].LastLiveAt != null
                 && cfg2.Rooms[0].LastTitle == "记录标题", cfg2.Rooms[0].LastStatus);
+            Check("config roundtrip area", cfg2.Rooms[0].Area == "最终幻想14", cfg2.Rooms[0].Area);
+            Check("config roundtrip lastlive local",
+                cfg2.Rooms[0].LastLiveAt != null
+                && ((DateTime)cfg2.Rooms[0].LastLiveAt).Kind == DateTimeKind.Local
+                && Math.Abs((((DateTime)cfg2.Rooms[0].LastLiveAt) - DateTime.Now).TotalMinutes) < 5,
+                cfg2.Rooms[0].LastLiveAt == null ? "null" : ((DateTime)cfg2.Rooms[0].LastLiveAt).ToString("O"));
         }
-        Check("config interval default", cfg2.IntervalSec == 30, cfg2.IntervalSec.ToString());
+        Check("config interval roundtrip", cfg2.IntervalSec == 45, cfg2.IntervalSec.ToString());
 
-        // restore the user's real config
-        try
-        {
-            if (hadConfig && backup.Length > 0)
-            {
-                File.Copy(backup, cfgPath, true);
-                File.Delete(backup);
-            }
-            else if (!hadConfig)
-            {
-                File.Delete(cfgPath);
-            }
-        }
-        catch (Exception ex) { _log.AppendLine("INFO config restore failed: " + ex.Message); }
+        cfg2.IntervalSec = 60;
+        cfg2.Save();
+        Check("config backup created", File.Exists(cfgPath + ".bak"), "");
+
+        // corrupt the main file: Load() must quarantine it and fall back to .bak
+        try { File.WriteAllText(cfgPath, "{ this is not valid json", Encoding.UTF8); } catch { }
+        var cfg3 = AppConfig.Load();
+        string[] badFiles = Directory.GetFiles(Path.GetDirectoryName(cfgPath), "config.json.bad-*");
+        Check("config corrupt file quarantined", badFiles.Length >= 1, "bad=" + badFiles.Length);
+        Check("config recovered from backup",
+            cfg3 != null && cfg3.Rooms.Count == 2 && cfg3.IntervalSec == 45,
+            (cfg3 == null ? "null" : cfg3.Rooms.Count + "/" + cfg3.IntervalSec));
 
         // ---------- room monitor state machine (no network needed) ----------
         var cfgm = new AppConfig();
@@ -289,10 +342,88 @@ class TestProgram
         monLoop.Stop();
         Check("wake does not cause tight loop", cycles <= 3, "cycles=" + cycles);
 
+        // ---------- shell-safety: URL validation ----------
+        Check("url http/https accepted",
+            PlatformApi.IsHttpUrl("https://live.bilibili.com/6")
+            && PlatformApi.IsHttpUrl("http://www.douyu.com/9999"), "");
+        Check("url javascript rejected", !PlatformApi.IsHttpUrl("javascript:alert(1)"), "");
+        Check("url file protocol rejected", !PlatformApi.IsHttpUrl("file:///C:/Windows/notepad.exe"), "");
+        Check("url local path rejected", !PlatformApi.IsHttpUrl(@"C:\Windows\notepad.exe"), "");
+        Check("url control chars rejected", !PlatformApi.IsHttpUrl("https://live.bilibili.com/6\r\ncalc.exe"), "");
+        Check("url empty rejected", !PlatformApi.IsHttpUrl("") && !PlatformApi.IsHttpUrl(null), "");
+
+        // ---------- UI resource caching (long-run GDI churn) ----------
+        Check("ui font cached", object.ReferenceEquals(Ui.F(9, FontStyle.Regular), Ui.F(9, FontStyle.Regular)), "");
+        Check("ui font cache distinguishes styles",
+            !object.ReferenceEquals(Ui.F(9, FontStyle.Regular), Ui.F(9, FontStyle.Bold)), "");
+        var imgA = Ui.AppImage;
+        var imgB = Ui.AppImage;
+        Check("ui app image cached", imgA != null && object.ReferenceEquals(imgA, imgB), "");
+
+        // ---------- log rotation keeps one previous file ----------
+        try
+        {
+            string logDir = Path.Combine(AppConfig.DataDir, "logtest");
+            Log.Init(logDir);
+            string pad = new string('x', 1024);
+            for (int i = 0; i < 1100; i++) Log.Info("rotate-test " + i + " " + pad);
+            Check("log rotation keeps previous log",
+                File.Exists(Path.Combine(logDir, "app.prev.log")), logDir);
+            long curLen = 0;
+            try { curLen = new FileInfo(Path.Combine(logDir, "app.log")).Length; } catch { }
+            Check("log rotation trims current log", curLen < 1024 * 1024, "len=" + curLen);
+        }
+        catch (Exception ex) { Check("log rotation", false, ex.Message); }
+        finally { try { Log.Init(Path.Combine(AppConfig.DataDir, "logs")); } catch { } }
+
         // ---------- resources ----------
         var asm = Assembly.GetExecutingAssembly();
         Check("resource chime.wav", asm.GetManifestResourceStream("chime.wav") != null, "");
         Check("resource app.ico", asm.GetManifestResourceStream("app.ico") != null, "");
+
+        // ---------- icon format ----------
+        // Windows only officially supports PNG-compressed entries at 256x256;
+        // small sizes must be DIB (BMP) entries, otherwise shell / legacy GDI
+        // icon code paths and .NET's Icon.ToBitmap can misbehave.
+        try
+        {
+            byte[] icoBytes;
+            using (var s = asm.GetManifestResourceStream("app.ico"))
+            {
+                icoBytes = new byte[s.Length];
+                int read = 0;
+                while (read < icoBytes.Length) read += s.Read(icoBytes, read, icoBytes.Length - read);
+            }
+            int n = BitConverter.ToUInt16(icoBytes, 4);
+            Check("icon entry count", n >= 5, "n=" + n);
+            int pngSmall = 0, dibSmall = 0, pngLarge = 0, badBounds = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int o = 6 + i * 16;
+                int w = icoBytes[o] == 0 ? 256 : icoBytes[o];
+                uint size = BitConverter.ToUInt32(icoBytes, o + 8);
+                uint off = BitConverter.ToUInt32(icoBytes, o + 12);
+                if (off + (long)size > icoBytes.Length) { badBounds++; continue; }
+                bool png = icoBytes[off] == 0x89 && icoBytes[off + 1] == 0x50;
+                if (w >= 256) { if (png) pngLarge++; }
+                else if (png) pngSmall++;
+                else dibSmall++;
+            }
+            Check("icon entries in bounds", badBounds == 0, "bad=" + badBounds);
+            Check("icon small sizes use DIB", pngSmall == 0 && dibSmall >= 4, "pngSmall=" + pngSmall + " dibSmall=" + dibSmall);
+            Check("icon 256 size uses PNG", pngLarge >= 1, "pngLarge=" + pngLarge);
+
+            using (var s = asm.GetManifestResourceStream("app.ico"))
+            using (var ic = new Icon(s))
+                Check("icon loads", ic.Width > 0 && ic.Height > 0, ic.Width + "x" + ic.Height);
+            using (var s = asm.GetManifestResourceStream("app.ico"))
+            using (var ic = new Icon(s, 16, 16))
+            {
+                using (var bmp = ic.ToBitmap())
+                    Check("icon 16x16 ToBitmap works", bmp.Width == 16 && bmp.Height == 16, bmp.Width + "x" + bmp.Height);
+            }
+        }
+        catch (Exception ex) { Check("icon load/format", false, ex.Message); }
 
         // ---------- live network attempt (informational; may fail offline) ----------
         try
@@ -304,6 +435,10 @@ class TestProgram
         {
             _log.AppendLine("INFO  network check failed: " + ex.Message);
         }
+
+        // remove the isolated self-test data directory
+        try { if (!string.IsNullOrEmpty(_testDataDir)) Directory.Delete(_testDataDir, true); } catch { }
+        Log.Init(Path.GetTempPath());
 
         _log.AppendLine(string.Format("TOTAL {0} pass, {1} fail", _pass, _fail));
         string result = _log.ToString();

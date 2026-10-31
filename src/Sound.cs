@@ -13,6 +13,7 @@ namespace LiveMonitor
         static byte[] _wav;
         static readonly object _lock = new object();
         static int _playing;
+        static long _playStartedTicks;
 
         [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
         static extern int mciSendString(string command, StringBuilder buffer, int bufferSize, IntPtr hwndCallback);
@@ -46,28 +47,62 @@ namespace LiveMonitor
         }
 
         /// <summary>Plays the custom sound file when set, otherwise the built-in chime.
-        /// Overlapping plays are skipped.</summary>
+        /// Overlapping plays are skipped.
+        /// A dedicated background thread is used instead of a ThreadPool work item:
+        /// mciSendString("play ... wait") blocks for the whole duration of the file,
+        /// and a long custom mp3 must not starve the thread pool (or the UI).
+        /// The "already playing" latch is reclaimed after 5 minutes so a hung audio
+        /// driver can never silence notifications forever.</summary>
         public static void PlayChime(bool enabled, string soundFile)
         {
             if (!enabled) return;
             string file = soundFile;
-            ThreadPool.QueueUserWorkItem(delegate
+            try
             {
-                if (Interlocked.Exchange(ref _playing, 1) == 1) return; // already playing
-                try
+                var t = new Thread(delegate()
                 {
-                    if (!string.IsNullOrEmpty(file) && File.Exists(file))
+                    if (!TryBeginPlay()) return;
+                    try
                     {
-                        if (!PlayFile(file)) PlayBuiltIn();
+                        if (!string.IsNullOrEmpty(file) && File.Exists(file))
+                        {
+                            if (!PlayFile(file)) PlayBuiltIn();
+                        }
+                        else
+                        {
+                            PlayBuiltIn();
+                        }
                     }
-                    else
-                    {
-                        PlayBuiltIn();
-                    }
+                    catch { }
+                    finally { Interlocked.Exchange(ref _playing, 0); }
+                });
+                t.IsBackground = true;
+                t.Name = "LiveMonitorSound";
+                t.Start();
+            }
+            catch { Interlocked.Exchange(ref _playing, 0); }
+        }
+
+        static bool TryBeginPlay()
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                if (Interlocked.CompareExchange(ref _playing, 1, 0) == 0)
+                {
+                    Interlocked.Exchange(ref _playStartedTicks, DateTime.UtcNow.Ticks);
+                    return true;
                 }
-                catch { }
-                finally { Interlocked.Exchange(ref _playing, 0); }
-            });
+                long started = Interlocked.Read(ref _playStartedTicks);
+                if (started != 0 && DateTime.UtcNow.Ticks - started > TimeSpan.FromMinutes(5).Ticks)
+                {
+                    // playback has been "in progress" for >5 min: assume the audio
+                    // device/driver is stuck and reclaim the latch
+                    Interlocked.Exchange(ref _playing, 0);
+                    continue;
+                }
+                return false;
+            }
+            return false;
         }
 
         static void PlayBuiltIn()
