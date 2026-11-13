@@ -111,7 +111,7 @@
 
     <string name="ui_section_security">安全</string>
     <string name="ui_setting_pinning">严格证书固定（防中间人）</string>
-    <string name="ui_setting_pinning_desc">只信任平台证书所属的 CA（GlobalSign/DigiCert）。可防止被恶意证书劫持检测数据；若平台整体更换证书导致所有房间检测失败，可临时关闭后重试。</string>
+    <string name="ui_setting_pinning_desc">默认关闭以兼容部分手机/网络环境。开启后只信任平台证书所属的 CA（GlobalSign/DigiCert）；若平台更换证书或网络代理导致所有房间检测失败，可关闭后重试。</string>
     <string name="ui_section_permission">权限与省电</string>
     <string name="ui_setting_notification">通知权限</string>
     <string name="ui_notification_enabled_summary">已开启 · 开播提醒通过本机通知展示，点击通知只打开本应用。</string>
@@ -134,7 +134,7 @@
     <string name="ui_log_clear">清空</string>
 
     <string name="ui_section_about">关于与隐私</string>
-    <string name="ui_about_version">直播监测 v1.1.2</string>
+    <string name="ui_about_version">直播监测 v1.1.3</string>
     <string name="ui_about_local">直播间与设置只保存在本机：不登录、不上传、不参与云同步。</string>
     <string name="ui_about_no_tracking">无统计、无广告、无崩溃上报、无第三方 SDK。</string>
     <string name="ui_about_notify">开播提醒只通过本机通知展示，点击通知仅打开本应用。</string>
@@ -170,4 +170,5 @@
     <string name="ui_sound_restored">已恢复默认提示音</string>
     <string name="ui_sound_preview_failed">试听失败，请检查系统音量或通知设置</string>
     <string name="ui_sound_read_failed">无法读取所选文件</string>
+    <string name="ui_room_error_reason">原因：%1$s</string>
 </resources>

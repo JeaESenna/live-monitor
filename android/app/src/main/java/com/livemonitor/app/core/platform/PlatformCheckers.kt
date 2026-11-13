@@ -384,6 +384,7 @@ internal class PlatformChecker(
             httpStatus != null -> "HTTP $httpStatus"
             tracker.lastKind == FailureKind.TIMEOUT -> "请求超时"
             tracker.lastKind == FailureKind.NETWORK -> "网络错误"
+            tracker.lastKind == FailureKind.TLS_PIN -> "TLS 证书固定校验失败（可能是系统代理/网络环境不兼容）；可在设置→安全关闭严格证书固定"
             tracker.lastKind == FailureKind.POLICY -> "地址不在允许范围"
             else -> fallbackMessage
         }

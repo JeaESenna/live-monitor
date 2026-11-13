@@ -561,7 +561,12 @@ class MonitorService : Service() {
                 CheckResult(state = LiveState.ERROR, error = "检测异常", failure = FailureKind.UNKNOWN)
             }
             val now = System.currentTimeMillis()
-            raw.copy(liveStartAt = PlatformApi.sanitizeLiveStartAt(raw.liveStartAt, now))
+            val checked = raw.copy(liveStartAt = PlatformApi.sanitizeLiveStartAt(raw.liveStartAt, now))
+            AppLog.info(
+                "Check",
+                "platform=${room.platform.key} id=${room.id} state=${checked.state} src=${checked.src} err=${checked.error.take(160)}",
+            )
+            checked
         } finally {
             releaseWakeLock()
         }
@@ -591,7 +596,13 @@ class MonitorService : Service() {
                 if (result.title.isNotEmpty() && result.sub != CheckResult.SUB_NETWORK_ANOMALY) {
                     updated = updated.copy(lastTitle = result.title)
                 }
-                updated = updated.copy(lastLiveAt = resolveLastLiveAt(old, result, outcome))
+                updated = updated.copy(
+                    lastError = when (result.state) {
+                        LiveState.ERROR, LiveState.UNKNOWN, LiveState.NOT_FOUND -> result.error.take(RoomItem.MAX_ERROR_LEN)
+                        else -> ""
+                    },
+                    lastLiveAt = resolveLastLiveAt(old, result, outcome),
+                )
                 // 首次拿到主播昵称且用户没写备注时自动补全显示名。
                 if (updated.autoName.isEmpty() && updated.remark.isEmpty() && result.owner.isNotEmpty()) {
                     updated = updated.copy(autoName = result.owner)

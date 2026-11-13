@@ -21,7 +21,7 @@ enum class Platform(val key: String, val displayName: String) {
 enum class LiveState { UNKNOWN, OFFLINE, LIVE, NOT_FOUND, ERROR }
 
 /** 网络层/解析层的失败分类，用于服务端背压与界面提示（不包含敏感内容）。 */
-enum class FailureKind { NONE, TIMEOUT, HTTP_STATUS, PARSE, NETWORK, POLICY, UNKNOWN }
+enum class FailureKind { NONE, TIMEOUT, HTTP_STATUS, PARSE, NETWORK, POLICY, TLS_PIN, UNKNOWN }
 
 /**
  * 一次房间检测的结果。
@@ -74,6 +74,8 @@ data class RoomItem(
     val lastSub: String = "",
     /** 最近一次检测因为网络异常而保持了旧状态。 */
     val lastTransient: Boolean = false,
+    /** 最近一次检测失败的原因（短文本，仅本地展示/诊断；成功时清空）。 */
+    val lastError: String = "",
 ) {
     val key: String get() = "${platform.key}:$id"
 
@@ -89,6 +91,7 @@ data class RoomItem(
         const val MAX_TITLE_LEN = 120
         const val MAX_AREA_LEN = 40
         const val MAX_SUB_LEN = 20
+        const val MAX_ERROR_LEN = 160
         const val MAX_ID_LEN = 64
     }
 }
@@ -110,7 +113,7 @@ data class AppSettings(
      * 防止恶意/被攻破 CA 对检测数据做中间人。默认开启；
      * 若平台整体更换 CA 导致所有房间检测失败，可临时关闭。
      */
-    val certificatePinning: Boolean = true,
+    val certificatePinning: Boolean = false,
     /**
      * 开播时是否自动打开对应直播间（默认关闭）。
      * 开启后服务在提醒发出后 best-effort 打开：已安装 App 则尝试 App 内房间页，
@@ -161,7 +164,7 @@ data class AppSettings(
             popupAutoCloseSec = popupAutoCloseSec ?: 0,
             notifyAlreadyLive = notifyAlreadyLive ?: true,
             monitorEnabled = monitorEnabled ?: true,
-            certificatePinning = certificatePinning ?: true,
+            certificatePinning = certificatePinning ?: false,
             autoOpenRoom = autoOpenRoom ?: false,
             customSoundFile = customSoundFile ?: "",
         ).normalize()
@@ -175,7 +178,7 @@ data class AppSnapshot(
     val rooms: List<RoomItem> = emptyList(),
 ) {
     companion object {
-        const val CONFIG_VERSION = 1
+        const val CONFIG_VERSION = 2
     }
 }
 

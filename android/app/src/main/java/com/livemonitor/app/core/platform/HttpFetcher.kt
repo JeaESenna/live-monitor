@@ -258,7 +258,7 @@ internal class HttpFetcher(
         is InterruptedIOException -> FetchOutcome.Failure(FailureKind.TIMEOUT, "请求超时")
         is UnknownHostException, is ConnectException -> FetchOutcome.Failure(FailureKind.NETWORK, "网络错误")
         is SSLPeerUnverifiedException ->
-            FetchOutcome.Failure(FailureKind.POLICY, "TLS 证书固定校验失败，可能存在中间人劫持")
+            FetchOutcome.Failure(FailureKind.TLS_PIN, "TLS 证书固定校验失败，可能是系统代理/网络环境不兼容")
         is SSLException -> FetchOutcome.Failure(FailureKind.NETWORK, "安全连接失败")
         else -> FetchOutcome.Failure(FailureKind.NETWORK, e.javaClass.simpleName)
     }

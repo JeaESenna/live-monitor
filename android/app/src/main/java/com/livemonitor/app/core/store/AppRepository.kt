@@ -248,12 +248,13 @@ class AppRepository(
         put("area", room.area)
         put("lastSub", room.lastSub)
         put("lastTransient", room.lastTransient)
+        put("lastError", room.lastError)
     }
 
     private fun decode(raw: String): AppSnapshot {
         val root = JSONObject(raw)
         val settingsJson = root.optJSONObject("settings")
-        val settings = AppSettings.of(
+        var settings = AppSettings.of(
             intervalSec = settingsJson?.optIntOrNull("intervalSec"),
             soundOn = settingsJson?.optBooleanOrNull("soundOn"),
             loopSoundSec = settingsJson?.optIntOrNull("loopSoundSec"),
@@ -264,6 +265,12 @@ class AppRepository(
             autoOpenRoom = settingsJson?.optBooleanOrNull("autoOpenRoom"),
             customSoundFile = settingsJson?.optString("customSoundFile").orEmpty(),
         )
+        val configVersion = root.optInt("configVersion", 1)
+        // v2 迁移：华为/卓易通等兼容环境对证书链处理不同，strict pinning 默认关闭；
+        // 老配置（configVersion<2）自动降级为兼容模式，用户可在设置里重新开启。
+        if (configVersion < 2) {
+            settings = settings.copy(certificatePinning = false)
+        }
         val roomsJson = root.optJSONArray("rooms") ?: JSONArray()
         val rooms = ArrayList<RoomItem>(minOf(roomsJson.length(), AppSettings.MAX_ROOMS))
         val seen = HashSet<String>()
@@ -275,7 +282,7 @@ class AppRepository(
             rooms.add(room)
         }
         return AppSnapshot(
-            configVersion = root.optInt("configVersion", AppSnapshot.CONFIG_VERSION),
+            configVersion = AppSnapshot.CONFIG_VERSION,
             settings = settings,
             rooms = rooms,
         )
@@ -303,6 +310,7 @@ class AppRepository(
                 area = sanitizeText(obj.optString("area"), RoomItem.MAX_AREA_LEN),
                 lastSub = sanitizeText(obj.optString("lastSub"), RoomItem.MAX_SUB_LEN),
                 lastTransient = obj.optBooleanOrNull("lastTransient") ?: false,
+                lastError = sanitizeText(obj.optString("lastError"), RoomItem.MAX_ERROR_LEN),
             ),
         )
     }
@@ -314,6 +322,7 @@ class AppRepository(
         area = sanitizeText(room.area, RoomItem.MAX_AREA_LEN),
         lastSub = sanitizeText(room.lastSub, RoomItem.MAX_SUB_LEN),
         lastStatus = if (room.lastStatus in RoomStatusKeys.ALL) room.lastStatus else "",
+        lastError = sanitizeText(room.lastError, RoomItem.MAX_ERROR_LEN),
     )
 
     companion object {

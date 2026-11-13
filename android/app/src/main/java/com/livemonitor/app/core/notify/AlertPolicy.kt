@@ -216,7 +216,7 @@ object AlertPolicy {
             FailureKind.UNKNOWN,
             FailureKind.NONE -> true
 
-            FailureKind.PARSE, FailureKind.POLICY -> false
+            FailureKind.PARSE, FailureKind.POLICY, FailureKind.TLS_PIN -> false
         }
     }
 

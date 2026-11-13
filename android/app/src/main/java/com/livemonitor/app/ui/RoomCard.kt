@@ -179,6 +179,16 @@ fun RoomCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (room.lastError.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.ui_room_error_reason, room.lastError),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StatusBad,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = stringResource(R.string.ui_room_meta, lastCheckText, lastLiveText),
