@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 通知渠道。UI 文案由 ui-dev 维护 strings_ui.xml，服务文案由 service-dev 维护本文件。 -->
+    <string name="notify_channel_service">监测服务</string>
+    <string name="notify_channel_service_desc">常驻通知，用于保持后台开播监测运行（静音）</string>
+    <string name="notify_channel_alerts">开播提醒</string>
+    <string name="notify_channel_alerts_desc">主播开播时发出提醒（振动；提示音由 App 播放，可用自定义音频）</string>
+
+    <!-- 前台服务常驻通知：监测中/已暂停 · X 个房间 · Y 个直播中 · 上次检测 HH:mm:ss -->
+    <string name="notify_service_title_running">监测中</string>
+    <string name="notify_service_title_paused">已暂停</string>
+    <string name="notify_service_text">%1$d 个房间 · %2$d 个直播中 · 上次检测 %3$s</string>
+    <string name="notify_service_text_no_check">%1$d 个房间 · %2$d 个直播中 · 尚未完成检测</string>
+    <string name="notify_action_pause">暂停</string>
+    <string name="notify_action_resume">继续</string>
+    <string name="notify_action_stop">停止</string>
+
+    <!-- 开播提醒：点击只打开本 App 列表；“进入直播间”只打开本 App 的选择弹窗，不直接跳转外部 -->
+    <string name="notify_alert_title">主播开播啦！</string>
+    <string name="notify_alert_live">正在直播</string>
+    <string name="notify_alert_enter_room">进入直播间</string>
+    <string name="notify_alert_ignore">忽略</string>
+    <string name="notify_alert_mute">不再提醒</string>
+</resources>

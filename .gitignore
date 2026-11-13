@@ -18,3 +18,20 @@
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# ---- Android 移植工程 ----
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/keystore/
+/android/dist/*.apk
+/android/dist/*.sha256
+/android/captures/
+*.iml
+.idea/
+/android/.kotlin/
+/android/keystore-backup/
+/android/dist/
+/android/security/reports/
+/android/docs/screenshots/

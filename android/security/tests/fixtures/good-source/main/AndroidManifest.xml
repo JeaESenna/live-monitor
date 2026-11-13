@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SelfTest 夹具：最小、正确的 Manifest（good-source 必须 0 FAIL）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.livemonitor.app">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <queries>
+        <package android:name="air.tv.douyu.android" />
+        <package android:name="com.duowan.kiwi" />
+        <package android:name="tv.danmaku.bili" />
+        <package android:name="com.ss.android.ugc.aweme" />
+        <package android:name="com.smile.gifmaker" />
+    </queries>
+
+    <application
+        android:name=".App"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ui.RoomJumpActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
+        <service
+            android:name=".core.monitor.MonitorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local reminder: poll user-added public live rooms." />
+        </service>
+    </application>
+</manifest>

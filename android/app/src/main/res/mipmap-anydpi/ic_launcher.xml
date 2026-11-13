@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 与 Windows 桌面版一致的图标：白底 + “直播监测”田字格，前景来自桌面版 app.ico 的 256px 图 -->
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <!-- 主题化图标（Android 13+）使用文字剪影 -->
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

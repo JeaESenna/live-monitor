@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.LiveMonitor" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFFFFFF</item>
+        <item name="android:colorAccent">#FF16A34A</item>
+        <item name="android:statusBarColor">#FFFFFFFF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FFFFFFFF</item>
+    </style>
+
+    <!-- “进入直播间”的透明弹窗 Activity 主题：只显示 Compose 对话框，不显示整页背景 -->
+    <style name="Theme.LiveMonitor.Dialog" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:colorAccent">#FF16A34A</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
