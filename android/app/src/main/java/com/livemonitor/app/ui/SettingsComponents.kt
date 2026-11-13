@@ -13,6 +13,7 @@ import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,12 +24,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -37,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -54,6 +59,7 @@ import com.livemonitor.app.R
 import com.livemonitor.app.ui.theme.BorderColor
 import com.livemonitor.app.ui.theme.TextPrimary
 import com.livemonitor.app.ui.theme.TextSecondary
+import kotlin.math.roundToInt
 
 /** 设置页的小节标题。 */
 @Composable
@@ -157,7 +163,7 @@ fun SwitchSettingRow(
     }
 }
 
-/** 滑块行：右侧实时显示当前值；拖动松手后再落盘。 */
+/** 滑块行：右侧实时显示当前值；拖动松手后再落盘。滑块只覆盖常用范围，更长的值可手动输入。 */
 @Composable
 fun SliderSettingRow(
     title: String,
@@ -169,7 +175,13 @@ fun SliderSettingRow(
     hint: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    manualRange: IntRange? = null,
+    onManualCommit: ((Int) -> Unit)? = null,
 ) {
+    var showManualInput by remember { mutableStateOf(false) }
+    var inputText by remember { mutableStateOf("") }
+    var inputError by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -191,7 +203,7 @@ fun SliderSettingRow(
             )
         }
         Slider(
-            value = value,
+            value = value.coerceIn(valueRange),
             onValueChange = onValueChange,
             onValueChangeFinished = onValueChangeFinished,
             valueRange = valueRange,
@@ -202,9 +214,83 @@ fun SliderSettingRow(
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
         )
+        if (manualRange != null && onManualCommit != null) {
+            TextButton(
+                onClick = {
+                    inputText = value.roundToInt()
+                        .coerceIn(manualRange.first, manualRange.last)
+                        .toString()
+                    inputError = false
+                    showManualInput = true
+                },
+                enabled = enabled,
+            ) {
+                Text(stringResource(R.string.ui_manual_input))
+            }
+        }
+    }
+
+    if (showManualInput && manualRange != null && onManualCommit != null) {
+        AlertDialog(
+            onDismissRequest = { showManualInput = false },
+            title = { Text(stringResource(R.string.ui_manual_input_title, title)) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { raw ->
+                            inputText = raw.filter { it.isDigit() }.take(4)
+                            inputError = false
+                        },
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.ui_manual_input_label)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        isError = inputError,
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(
+                            R.string.ui_manual_input_range,
+                            manualRange.first,
+                            manualRange.last,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                    if (inputError) {
+                        Text(
+                            text = stringResource(
+                                R.string.ui_manual_input_invalid,
+                                manualRange.first,
+                                manualRange.last,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val parsed = inputText.toIntOrNull()
+                        if (parsed == null || parsed !in manualRange) {
+                            inputError = true
+                        } else {
+                            onManualCommit(parsed)
+                            showManualInput = false
+                        }
+                    },
+                ) { Text(stringResource(R.string.ui_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualInput = false }) {
+                    Text(stringResource(R.string.ui_cancel))
+                }
+            },
+        )
     }
 }
-
 /** 说明 + 可选操作按钮的行（权限/省电/日志入口）。 */
 @Composable
 fun ActionSettingRow(

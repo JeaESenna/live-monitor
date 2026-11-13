@@ -16,7 +16,7 @@ v1.1.0 恢复桌面版的“进入直播间”能力：可从列表/通知打开
 | 构建 | Gradle 8.9 + AGP 8.7.3，release 启用 R8 minify + shrinkResources |
 | 权限 | INTERNET、ACCESS_NETWORK_STATE、POST_NOTIFICATIONS、FOREGROUND_SERVICE、FOREGROUND_SERVICE_SPECIAL_USE、WAKE_LOCK（无新增权限） |
 | 包可见性 | `<queries>` 仅声明 5 个平台 App 包名；**未申请 QUERY_ALL_PACKAGES** |
-| 当前交付 | `dist/直播监测-Android-v1.1.3-signed.apk`：已签名 release APK（v2+v3、RSA 4096-bit、非 debug 证书），**可直接安装/覆盖升级**；签名密钥/备份均在本机且已 gitignore |
+| 当前交付 | `dist/直播监测-Android-v1.1.4-signed.apk`：已签名 release APK（v2+v3、RSA 4096-bit、非 debug 证书），**可直接安装/覆盖升级**；签名密钥/备份均在本机且已 gitignore |
 
 > 本目录是 Android 工程根目录（`android/`）。桌面版源码/文档在仓库根目录 `src/`、`README.md`、`docs/`。
 
@@ -90,7 +90,7 @@ pwsh -NoProfile -File scripts/build-release.ps1
 
 | 产物 | 说明 |
 | --- | --- |
-| `dist/直播监测-Android-v1.1.3-signed.apk` | **当前交付：已签名 release v1.1.3（兼容性修复：证书固定默认关闭、检测失败原因可见）**（v2+v3、RSA 4096-bit、非 debug 证书），可直接安装/覆盖升级 |
+| `dist/直播监测-Android-v1.1.4-signed.apk` | **当前交付：已签名 release v1.1.4（设置滑块缩短常用范围 + 手动输入精确秒数；v1.1.3 兼容性修复沿用）**（v2+v3、RSA 4096-bit、非 debug 证书），可直接安装/覆盖升级 |
 | `app/build/outputs/apk/release/app-release-unsigned.apk` | AGP 生成的 unsigned 中间产物（用 `scripts/sign-release.ps1` 签名） |
 | `dist/直播监测-Android-v1.0.0-debug-test.apk` | debug 测试包（debuggable=true，**仅本机功能试用，禁止分发**） |
 
@@ -100,7 +100,7 @@ pwsh -NoProfile -File scripts/build-release.ps1
 - 当前签名密钥：`android/keystore/livemonitor-release.jks`（PKCS12），口令写在 `local.properties` 的
   `RELEASE_STORE_PASSWORD` / `RELEASE_KEY_PASSWORD`；`scripts/sign-release.ps1` 负责重签并校验（v2+v3 / 4 字节对齐 / SHA-256）。
 - **首次安装与后续升级必须使用同一密钥**，否则无法覆盖安装。
-- **签名密钥备份（当前，含 v1.1.3 版本记录）**：`android/keystore-backup/直播监测-Android-签名密钥备份.zip`（已去掉版本号）内含 keystore **与口令说明**（高度敏感），该目录已被 `.gitignore` 忽略（`git check-ignore` 确认不进入仓库；`git ls-files` 无该目录文件）。请把备份包存放在**其他可信离线设备/介质**并妥善保管；**不要上传网盘/聊天工具/仓库，不要随 APK 分发，也不要把口令截图或内容放进任何文档**。口令与 keystore 分离保管更安全。备份 zip 实测 SHA-256 `03770bcd6db465365a0fe3f09e200d6f4a5cb1a81427ab16e00a51fbc008f2c1`（与随附 `.sha256` 一致），内含 v1.1.3 版本记录与“无自动下载 App 功能”说明。
+- **签名密钥备份（当前，含 v1.1.4 版本记录）**：`android/keystore-backup/直播监测-Android-签名密钥备份.zip`（已去掉版本号）内含 keystore **与口令说明**（高度敏感），该目录已被 `.gitignore` 忽略（`git check-ignore` 确认不进入仓库；`git ls-files` 无该目录文件）。请把备份包存放在**其他可信离线设备/介质**并妥善保管；**不要上传网盘/聊天工具/仓库，不要随 APK 分发，也不要把口令截图或内容放进任何文档**。口令与 keystore 分离保管更安全。备份 zip 实测 SHA-256 `ea0c84c5527757ec632dc78158a9823d75a001b1cc50399f67e733cb6d2451ed`（与随附 `.sha256` 一致），内含 v1.1.4 版本记录与“无自动下载 App 功能”说明。
 - **公开分发前建议**：用组织自有的正式发布密钥重签（当前为本机生成的发布密钥），同步替换备份；不要把 keystore/口令提交仓库或打包进 APK。
 
 ```powershell
@@ -112,14 +112,14 @@ keytool -genkeypair -v -keystore keystore/livemonitor-release.jks `
 # local.properties 写入 RELEASE_STORE_FILE / RELEASE_STORE_PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD 后：
 pwsh -NoProfile -File scripts/sign-release.ps1 `
   -UnsignedApk app/build/outputs/apk/release/app-release-unsigned.apk `
-  -OutApk dist/直播监测-Android-v1.1.3-signed.apk
+  -OutApk dist/直播监测-Android-v1.1.4-signed.apk
 
 # 验证签名与哈希
-& "$env:ANDROID_HOME\build-tools\34.0.0\apksigner.bat" verify --verbose --print-certs dist\直播监测-Android-v1.1.3-signed.apk
-Get-FileHash dist\直播监测-Android-v1.1.3-signed.apk -Algorithm SHA256
+& "$env:ANDROID_HOME\build-tools\34.0.0\apksigner.bat" verify --verbose --print-certs dist\直播监测-Android-v1.1.4-signed.apk
+Get-FileHash dist\直播监测-Android-v1.1.4-signed.apk -Algorithm SHA256
 ```
 
-当前交付：`dist/直播监测-Android-v1.1.3-signed.apk`，**1,640,615 字节**，SHA-256 `082f3e3708195886789004632db013693fed3d221b0cb031de070ebd16ed0d23`（同目录 `.sha256` 与安全测试报告 v3.3 一致），
+当前交付：`dist/直播监测-Android-v1.1.4-signed.apk`，**1,643,279 字节**，SHA-256 `f647db90730df8320804277b1b723542a6a89c2a47397ace7733523a71ebc99a`（同目录 `.sha256` 与安全测试报告 v3.4 一致），
 签名沿用同一密钥：v2+v3、v1=false、RSA 4096-bit、证书 DN `CN=LiveMonitor Android, OU=Mobile, O=LiveMonitor, L=Beijing, ST=Beijing, C=CN`。
 
 ## 5. TLS 证书固定（防中间人）
@@ -149,8 +149,8 @@ Get-FileHash dist\直播监测-Android-v1.1.3-signed.apk -Algorithm SHA256
 
 ```powershell
 pwsh -NoProfile -File security/run-security-tests.ps1 `
-  -ApkPath "dist/直播监测-Android-v1.1.3-signed.apk" `
-  -ExpectedSha256 082f3e3708195886789004632db013693fed3d221b0cb031de070ebd16ed0d23 -ExpectedVersionName 1.1.3 -RequireApk
+  -ApkPath "dist/直播监测-Android-v1.1.4-signed.apk" `
+  -ExpectedSha256 f647db90730df8320804277b1b723542a6a89c2a47397ace7733523a71ebc99a -ExpectedVersionName 1.1.4 -RequireApk
 
 # 快速静态复检（跳过 Gradle 单测/lint/依赖）
 pwsh -NoProfile -File security/run-security-tests.ps1 -SkipGradle -SkipDependencies -ApkPath <apk>
@@ -193,14 +193,14 @@ pwsh -NoProfile -File scripts/dev-gradle.ps1 :app:testDebugUnitTest --console=pl
 pwsh -NoProfile -File scripts/dev-gradle.ps1 :app:lintRelease --console=plain
 ```
 
-- 当前 v1.1.3 实测（兼容性修复：证书固定默认关闭、房间卡片显示失败原因、诊断日志记录每次检测；测试数不变）：**254 个 JVM 单元测试 / 12 个测试类 / 0 失败**；Lint release **0 error / 0 warning**（v1.1.2 图标资源整理后无告警）。
+- 当前 v1.1.4 实测（设置滑块常用范围 15~300/0~300/0~120 秒 + 手动输入最长 3600 秒；v1.1.3 兼容性修复沿用）：：**254 个 JVM 单元测试 / 12 个测试类 / 0 失败**；Lint release **0 error / 0 warning**（v1.1.2 图标资源整理后无告警）。
 - 覆盖：输入解析、URL 白名单/SSRF、5 平台解析器（防御性）、状态机、提醒策略/通知 ID、HTTP 抓取、TLS 证书固定、**进入直播间目标构造/跳转契约、自定义提示音策略/存储、通知渠道迁移、设置默认值**等 JVM 测试。
 
 ## 8. 动态测试（LDPlayer 14）
 
-环境：LDPlayer 14，Android 14（API 34），x86_64，1600x900；安装**签名 release APK**。结果详见 `docs/安全测试报告.md` v3.3 第 8 节（按用户要求，动态测试截图未随仓库发布，已在本地归档）。
+环境：LDPlayer 14，Android 14（API 34），x86_64，1600x900；安装**签名 release APK**。结果详见 `docs/安全测试报告.md` v3.4 第 8 节（按用户要求，动态测试截图未随仓库发布，已在本地归档）。
 
-**v1.1.2 图标更换 / v1.1.3 兼容性修复说明**：v1.1.2 仅更换为与 Windows 桌面版一致的图标；v1.1.3 针对华为/卓易通兼容环境将严格证书固定改为默认关闭，并新增“检测失败原因”显示与每次检测诊断日志（无权限/Manifest 变更）。以下行为动态结果继承自 v1.1.1（Lead 执行、评审员核验命令输出/证据）：
+**v1.1.2 图标更换 / v1.1.3 兼容性修复 / v1.1.4 滑块交互说明**：v1.1.2 仅更换为与 Windows 桌面版一致的图标；v1.1.3 针对华为/卓易通兼容环境将严格证书固定改为默认关闭，并新增“检测失败原因”显示与每次检测诊断日志（无权限/Manifest 变更）。以下行为动态结果继承自 v1.1.1（Lead 执行、评审员核验命令输出/证据）：
 - ✅ v1.1.0→v1.1.1 覆盖安装成功（同密钥、versionCode 3），房间/设置/自定义提示音保留；启动无崩溃。
 - ✅ 未安装 App（斗鱼）点“进入直播间”→ 弹窗正文“未检测到「斗鱼」App。请自行在应用商店下载安装后再进入，或直接用浏览器打开网页版。”；**仅「用浏览器打开网页版 / 取消」，无下载按钮/无市场跳转**（v1.1.1 已下架下载功能）。
 - ✅ 浏览器网页版分支：打开 `m.douyu.com/252140`，对应直播间、标题正确。
@@ -233,7 +233,7 @@ pwsh -NoProfile -File scripts/dev-gradle.ps1 :app:lintRelease --console=plain
 | `威胁模型.md` | 资产/信任边界、STRIDE、移动端攻击面、MITM/CA 与证书固定、**外部跳转/Intent 劫持、自定义媒体解析、BAL、包可见性**、密钥备份 |
 | `合规评估.md` | 平台访问方式/频率、robots/ToS 风险声明、PIPL/最小化、商店上架合规点、第三方跳转与自定义音合规说明 |
 | `隐私政策.md` | 中文隐私政策草案（含外部跳转/自定义音说明；发布前填写开发者/联系方式/生效日期并法务审阅） |
-| `安全测试报告.md` | **v3.3（v1.1.3）**：v1.1.1 增量检查 + v1.1.2 图标更换说明、签名 APK 加固、依赖、254 测试、LDPlayer 动态复测、证书固定、残留风险与结论 |
+| `安全测试报告.md` | **v3.4（v1.1.4）**：v1.1.1 增量 + v1.1.2 图标 + v1.1.3 兼容性 + v1.1.4 滑块交互说明、签名 APK 加固、依赖、254 测试、LDPlayer 动态复测、证书固定、残留风险与结论 |
 
 ## 11. 合规与免责
 

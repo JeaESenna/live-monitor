@@ -95,17 +95,17 @@
     <string name="ui_setting_monitor_current">当前：%1$s</string>
     <string name="ui_setting_interval">检测间隔</string>
     <string name="ui_setting_seconds">%1$d 秒</string>
-    <string name="ui_setting_interval_hint">越短越耗电，且可能触发平台风控；建议 30~120 秒。</string>
+    <string name="ui_setting_interval_hint">滑块常用范围 15~300 秒；更长可点“手动输入”（最长 3600 秒）。越短越耗电，且可能触发平台风控；建议 30~120 秒。</string>
 
     <string name="ui_section_alert">开播提醒</string>
     <string name="ui_setting_sound">开播时播放提示音</string>
     <string name="ui_setting_sound_desc">提醒通知显示期间可循环提示；关闭后仅静音提醒。</string>
     <string name="ui_setting_loop">循环提示间隔</string>
     <string name="ui_setting_loop_off">不循环</string>
-    <string name="ui_setting_loop_hint">0 = 不循环；弹窗显示期间每隔 N 秒重复一次提示音。</string>
+    <string name="ui_setting_loop_hint">滑块 0~300 秒，更长可手动输入；0 = 不循环；弹窗显示期间每隔 N 秒重复一次提示音。</string>
     <string name="ui_setting_autoclose">提醒自动关闭</string>
     <string name="ui_setting_autoclose_off">常驻</string>
-    <string name="ui_setting_autoclose_hint">0 = 常驻显示，直到你手动操作。</string>
+    <string name="ui_setting_autoclose_hint">滑块 0~120 秒，更长可手动输入；0 = 常驻显示，直到你手动操作。</string>
     <string name="ui_setting_notify_live">启动时对已开播的房间也提醒</string>
     <string name="ui_setting_notify_live_desc">应用重新打开时，已在直播的主播也会提醒一次。</string>
 
@@ -134,7 +134,7 @@
     <string name="ui_log_clear">清空</string>
 
     <string name="ui_section_about">关于与隐私</string>
-    <string name="ui_about_version">直播监测 v1.1.3</string>
+    <string name="ui_about_version">直播监测 v1.1.4</string>
     <string name="ui_about_local">直播间与设置只保存在本机：不登录、不上传、不参与云同步。</string>
     <string name="ui_about_no_tracking">无统计、无广告、无崩溃上报、无第三方 SDK。</string>
     <string name="ui_about_notify">开播提醒只通过本机通知展示，点击通知仅打开本应用。</string>
@@ -171,4 +171,10 @@
     <string name="ui_sound_preview_failed">试听失败，请检查系统音量或通知设置</string>
     <string name="ui_sound_read_failed">无法读取所选文件</string>
     <string name="ui_room_error_reason">原因：%1$s</string>
+    <string name="ui_manual_input">手动输入</string>
+    <string name="ui_manual_input_title">手动输入%1$s（秒）</string>
+    <string name="ui_manual_input_label">秒数</string>
+    <string name="ui_manual_input_range">可输入 %1$d~%2$d 秒</string>
+    <string name="ui_manual_input_invalid">请输入 %1$d~%2$d 之间的整数秒数</string>
+    <string name="ui_confirm">确定</string>
 </resources>

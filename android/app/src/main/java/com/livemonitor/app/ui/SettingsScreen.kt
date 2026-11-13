@@ -180,9 +180,13 @@ fun SettingsScreen(
                                     ),
                                 )
                             },
-                            valueRange = AppSettings.MIN_INTERVAL_SEC.toFloat()..
-                                AppSettings.MAX_INTERVAL_SEC.toFloat(),
+                            valueRange = AppSettings.MIN_INTERVAL_SEC.toFloat()..300f,
                             hint = stringResource(R.string.ui_setting_interval_hint),
+                            manualRange = AppSettings.MIN_INTERVAL_SEC..AppSettings.MAX_INTERVAL_SEC,
+                            onManualCommit = { v ->
+                                intervalDraft = v.toFloat()
+                                viewModel.setIntervalSec(v)
+                            },
                         )
                     }
                 }
@@ -211,9 +215,14 @@ fun SettingsScreen(
                                     loopDraft.roundToInt().coerceIn(0, AppSettings.MAX_LOOP_SEC),
                                 )
                             },
-                            valueRange = 0f..AppSettings.MAX_LOOP_SEC.toFloat(),
+                            valueRange = 0f..300f,
                             hint = stringResource(R.string.ui_setting_loop_hint),
                             enabled = settings.soundOn,
+                            manualRange = 0..AppSettings.MAX_LOOP_SEC,
+                            onManualCommit = { v ->
+                                loopDraft = v.toFloat()
+                                viewModel.setLoopSoundSec(v)
+                            },
                         )
                         RowDivider()
                         SliderSettingRow(
@@ -231,8 +240,13 @@ fun SettingsScreen(
                                         .coerceIn(0, AppSettings.MAX_AUTO_CLOSE_SEC),
                                 )
                             },
-                            valueRange = 0f..AppSettings.MAX_AUTO_CLOSE_SEC.toFloat(),
+                            valueRange = 0f..120f,
                             hint = stringResource(R.string.ui_setting_autoclose_hint),
+                            manualRange = 0..AppSettings.MAX_AUTO_CLOSE_SEC,
+                            onManualCommit = { v ->
+                                autoCloseDraft = v.toFloat()
+                                viewModel.setPopupAutoCloseSec(v)
+                            },
                         )
                         RowDivider()
                         SwitchSettingRow(
